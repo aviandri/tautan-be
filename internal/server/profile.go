@@ -55,6 +55,7 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 	args := []any{}
 	onboardingPatch := map[string]any{}
 	publishing := false
+	newUsername := ""
 	add := func(col string, v any) {
 		args = append(args, v)
 		sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
@@ -148,8 +149,32 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			add("username", u)
+			newUsername = u
 			onboardingPatch["username_claimed"] = true
 			onboardingPatch["suggested_username"] = nil
+		case "announcement":
+			var prevID string
+			if err := s.db.QueryRow(r.Context(), `SELECT COALESCE(announcement->>'id', '') FROM profiles WHERE id = $1`, profileID(r)).Scan(&prevID); err != nil {
+				s.internalError(w, err)
+				return
+			}
+			norm, err := normalizeAnnouncement(raw, prevID)
+			if err != nil {
+				bad("invalid_announcement", err.Error())
+				return
+			}
+			if norm == nil {
+				sets = append(sets, "announcement = NULL")
+			} else {
+				add("announcement", norm)
+			}
+		case "settings":
+			norm, err := normalizeSettings(raw)
+			if err != nil {
+				bad("invalid_settings", err.Error())
+				return
+			}
+			add("settings", norm)
 		case "onboarding":
 			patch, err := parseOnboardingPatch(raw, s.now())
 			if err != nil {
@@ -182,8 +207,31 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 	sets = append(sets, "updated_at = now()")
 	args = append(args, profileID(r))
 	q := fmt.Sprintf(`UPDATE profiles SET %s WHERE id = $%d RETURNING %s`, strings.Join(sets, ", "), len(args), profileCols)
-	p, err := scanProfile(s.db.QueryRow(r.Context(), q, args...))
-	if isUniqueViolation(err, "profiles_username_key") {
+	ctx, pid := r.Context(), profileID(r)
+	var p Profile
+	var taken bool
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var oldUsername string
+		if newUsername != "" {
+			if err := tx.QueryRow(ctx, `SELECT username FROM profiles WHERE id = $1 FOR UPDATE`, pid).Scan(&oldUsername); err != nil {
+				return err
+			}
+			// Another profile's retired username keeps redirecting there, so it can't be claimed.
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM username_redirects WHERE old_username = $1 AND profile_id <> $2)`,
+				newUsername, pid).Scan(&taken); err != nil || taken {
+				return err
+			}
+		}
+		var err error
+		if p, err = scanProfile(tx.QueryRow(ctx, q, args...)); err != nil {
+			return err
+		}
+		if newUsername != "" {
+			return recordRename(ctx, tx, pid, oldUsername, newUsername)
+		}
+		return nil
+	})
+	if taken || isUniqueViolation(err, "profiles_username_key") {
 		writeError(w, http.StatusConflict, "username_taken", "this username is taken")
 		return
 	}
@@ -229,6 +277,7 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 	out.Blocks, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Block, error) { return scanBlock(r) })
 	if err == nil && visibleOnly {
 		out.Blocks = publicBlocks(out.Blocks, s.now())
+		out.Profile.Announcement = publicAnnouncement(out.Profile.Announcement, s.now())
 	}
 	return out, err
 }
@@ -249,4 +298,15 @@ func publicBlocks(blocks []Block, now time.Time) []Block {
 		}
 	}
 	return out
+}
+
+// publicAnnouncement hides an announcement outside its schedule window.
+func publicAnnouncement(raw json.RawMessage, now time.Time) json.RawMessage {
+	var a struct {
+		Schedule *Schedule `json:"schedule"`
+	}
+	if json.Unmarshal(raw, &a) == nil && !a.Schedule.activeAt(now) {
+		return json.RawMessage("null")
+	}
+	return raw
 }

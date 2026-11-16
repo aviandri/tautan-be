@@ -73,6 +73,7 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/public/{username}/contact", s.handlePublicContact)
 		r.Post("/public/{username}/form", s.handlePublicForm)
 		r.Post("/public/{username}/subscribe", s.handlePublicSubscribe)
+		r.Get("/public/{username}/vcard", s.handleVCard)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
