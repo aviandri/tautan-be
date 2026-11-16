@@ -20,6 +20,9 @@ var (
 	buttonStyles  = set("fill", "outline", "shadow")
 	shadowStyles  = set("soft", "solid")
 	headerLayouts = set("classic", "banner", "headshot", "business")
+	paletteModes  = set("cycle", "by_type", "mono")
+	// Palette colours are stricter than other theme colours: hex or rgb()/rgba() only.
+	paletteColorRE = regexp.MustCompile(`^(#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|rgba?\(\s*[0-9.]+%?\s*[, ]\s*[0-9.]+%?\s*[, ]\s*[0-9.]+%?\s*([,/]\s*[0-9.]+%?\s*)?\))$`)
 )
 
 // Theme v2. Unknown keys are passed through untouched (validated keys only),
@@ -58,6 +61,46 @@ type themeV2 struct {
 		Layout         string `json:"layout"`
 		BannerImageURL string `json:"banner_image_url"`
 	} `json:"header"`
+	// Multi-colour themes: cards take surfaces in turn (cycle), by card type, or one (mono).
+	Palette     *themePalette `json:"palette"`
+	PaletteMode *string       `json:"palette_mode"`
+}
+
+type themePalette struct {
+	Surfaces    []string `json:"surfaces"`
+	Accents     []string `json:"accents"`
+	Ink         string   `json:"ink"`
+	InkOnAccent string   `json:"ink_on_accent"`
+}
+
+func checkPaletteColor(field, v string) error {
+	if !paletteColorRE.MatchString(strings.TrimSpace(v)) {
+		return fmt.Errorf("%s must be a hex (#rrggbb) or rgb()/rgba() colour", field)
+	}
+	return nil
+}
+
+func checkPalette(p *themePalette) error {
+	if p == nil {
+		return nil
+	}
+	if n := len(p.Surfaces); n < 4 || n > 6 {
+		return fmt.Errorf("palette.surfaces needs 4 to 6 colours")
+	}
+	if n := len(p.Accents); n < 1 || n > 2 {
+		return fmt.Errorf("palette.accents needs 1 or 2 colours")
+	}
+	for i, c := range p.Surfaces {
+		if err := checkPaletteColor(fmt.Sprintf("palette.surfaces[%d]", i), c); err != nil {
+			return err
+		}
+	}
+	for i, c := range p.Accents {
+		if err := checkPaletteColor(fmt.Sprintf("palette.accents[%d]", i), c); err != nil {
+			return err
+		}
+	}
+	return firstErr(checkPaletteColor("palette.ink", p.Ink), checkPaletteColor("palette.ink_on_accent", p.InkOnAccent))
 }
 
 type colorPair struct {
@@ -147,6 +190,10 @@ func validateTheme(raw json.RawMessage) error {
 	}
 	if f := t.Fonts; f != nil {
 		errs = append(errs, checkFont("fonts.title", f.Title), checkFont("fonts.body", f.Body))
+	}
+	errs = append(errs, checkPalette(t.Palette))
+	if t.PaletteMode != nil && *t.PaletteMode != "" {
+		errs = append(errs, oneOf("palette_mode", *t.PaletteMode, paletteModes))
 	}
 	if h := t.Header; h != nil {
 		errs = append(errs, oneOf("header.layout", h.Layout, headerLayouts), checkURL("header.banner_image_url", h.BannerImageURL, false))

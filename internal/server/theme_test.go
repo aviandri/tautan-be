@@ -89,3 +89,50 @@ func TestProfileSocials(t *testing.T) {
 		t.Errorf("clear socials = %s", p.Socials)
 	}
 }
+
+func TestThemePalette(t *testing.T) {
+	_, h := newTestServer(t)
+	a := signup(t, h, "palette")
+	tok := bearer(a.AccessToken)
+	good := `{"theme":{"preset":"pelangi","palette_mode":"cycle","palette":{
+	  "surfaces":["#ffe1d6","#d9f2e6","#e5e0ff","#fff3c4","rgb(214, 236, 255)"],
+	  "accents":["#ff6b4a","rgba(30,30,30,0.9)"],"ink":"#2a1208","ink_on_accent":"#fff"}}}`
+	var p Profile
+	do(t, h, "PATCH", "/api/v1/profile", good, tok).expect(200).json(&p)
+	if !strings.Contains(string(p.Theme), `"palette_mode":"cycle"`) || !strings.Contains(string(p.Theme), `rgb(214, 236, 255)`) {
+		t.Errorf("palette not stored as sent: %s", p.Theme)
+	}
+	for _, mode := range []string{"by_type", "mono"} {
+		do(t, h, "PATCH", "/api/v1/profile", `{"theme":{"palette_mode":"`+mode+`"}}`, tok).expect(200)
+	}
+	surf := func(n int) string {
+		c := make([]string, n)
+		for i := range c {
+			c[i] = `"#abcdef"`
+		}
+		return "[" + strings.Join(c, ",") + "]"
+	}
+	pal := func(surfaces, accents, ink, onAccent string) string {
+		return `{"palette":{"surfaces":` + surfaces + `,"accents":` + accents + `,"ink":` + ink + `,"ink_on_accent":` + onAccent + `}}`
+	}
+	for _, bad := range []string{
+		pal(surf(3), `["#000"]`, `"#111"`, `"#fff"`), // too few surfaces
+		pal(surf(7), `["#000"]`, `"#111"`, `"#fff"`), // too many surfaces
+		pal(surf(4), `[]`, `"#111"`, `"#fff"`),
+		pal(surf(4), `["#000","#111","#222"]`, `"#111"`, `"#fff"`),
+		pal(surf(4), `["red"]`, `"#111"`, `"#fff"`),               // named colours not allowed in a palette
+		pal(surf(4), `["hsl(10, 50%, 50%)"]`, `"#111"`, `"#fff"`), // hsl not allowed
+		pal(surf(4), `["#000"]`, `"#11"`, `"#fff"`),               // bad hex
+		pal(surf(4), `["#000"]`, `"#111"`, `""`),                  // ink_on_accent required
+		pal(surf(4), `["#000"]`, `"#111; background:url(x)"`, `"#fff"`),
+		pal(`["#fff","#fff","#fff","rgb(1,2,3); x:y"]`, `["#000"]`, `"#111"`, `"#fff"`),
+		`{"palette_mode":"rainbow"}`,
+		`{"palette":"#fff"}`,
+	} {
+		if r := do(t, h, "PATCH", "/api/v1/profile", `{"theme":`+bad+`}`, tok); r.Code != 400 {
+			t.Errorf("%s: got %d", bad, r.Code)
+		}
+	}
+	// palette: null clears it
+	do(t, h, "PATCH", "/api/v1/profile", `{"theme":{"palette":null}}`, tok).expect(200)
+}
