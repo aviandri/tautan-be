@@ -19,6 +19,10 @@ type pageMeta struct {
 	Description string `json:"description"`
 	ImageURL    string `json:"image_url"`
 	SiteName    string `json:"site_name"`
+	// Product price from og:price / product:price tags, in minor units (P3-A).
+	Price    *int64 `json:"price,omitempty"`
+	Currency string `json:"currency,omitempty"`
+	ogType   string
 }
 
 // parseMeta reads OpenGraph/Twitter/HTML metadata from the document head.
@@ -64,6 +68,16 @@ func parseMeta(body []byte, base *url.URL) pageMeta {
 					}
 				case "og:site_name":
 					m.SiteName = content
+				case "og:type":
+					m.ogType = strings.ToLower(content)
+				case "product:price:amount", "og:price:amount":
+					if m.Price == nil {
+						m.Price = parsePriceMinor(content)
+					}
+				case "product:price:currency", "og:price:currency":
+					if m.Currency == "" {
+						m.Currency = strings.ToUpper(content)
+					}
 				case "twitter:title":
 					twTitle = content
 				case "twitter:description":
@@ -135,6 +149,56 @@ var (
 	imageExts  = set(".png", ".jpg", ".jpeg", ".gif", ".webp")
 )
 
+// marketplacePlatform maps a store or product URL host to a marketplace platform id.
+func marketplacePlatform(u *url.URL) string {
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	labels := strings.Split(host, ".")
+	first := labels[0]
+	if len(labels) > 2 && (first == "s" || first == "m" || first == "tk" || first == "vt") {
+		first = labels[1] // s.lazada.co.id, m.tokopedia.com, tk.tokopedia.com
+	}
+	switch {
+	case first == "shopee" || host == "shp.ee":
+		return "shopee"
+	case first == "tokopedia":
+		return "tokopedia"
+	case host == "shop.tiktok.com" || host == "seller-id.tiktok.com" ||
+		(host == "tiktok.com" && (strings.Contains(u.Path, "/product/") || strings.HasPrefix(u.Path, "/view/product"))):
+		return "tiktok_shop"
+	case first == "lazada":
+		return "lazada"
+	case host == "blibli.com":
+		return "blibli"
+	case host == "bukalapak.com":
+		return "bukalapak"
+	case host == "etsy.com" || host == "etsy.me":
+		return "etsy"
+	case first == "amazon" || host == "amzn.to" || host == "amzn.asia" || host == "amzn.eu":
+		return "amazon"
+	case host == "gumroad.com" || strings.HasSuffix(host, ".gumroad.com") || host == "gum.co":
+		return "gumroad"
+	}
+	return ""
+}
+
+// parsePriceMinor reads "85000", "85000.00" or "85,000.5" as minor units (2 decimals).
+func parsePriceMinor(s string) *int64 {
+	s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
+	whole, frac, _ := strings.Cut(s, ".")
+	if whole == "" || len(whole) > 13 || len(frac) > 2 {
+		return nil
+	}
+	frac += strings.Repeat("0", 2-len(frac))
+	var n int64
+	for _, c := range whole + frac {
+		if c < '0' || c > '9' {
+			return nil
+		}
+		n = n*10 + int64(c-'0')
+	}
+	return &n
+}
+
 // classifyURL suggests a block type from the URL alone.
 func classifyURL(u *url.URL) string {
 	host := normalizeHost(strings.ToLower(u.Hostname()))
@@ -155,6 +219,8 @@ type unfurlResult struct {
 	URL           string `json:"url"`
 	SuggestedType string `json:"suggested_type"`
 	DestKind      string `json:"dest_kind,omitempty"`
+	Kind          string `json:"kind,omitempty"`     // "marketplace" for store/product URLs
+	Platform      string `json:"platform,omitempty"` // marketplace platform id
 	Fetched       bool   `json:"fetched"`
 	pageMeta
 }
@@ -194,6 +260,9 @@ func (s *Server) handleUnfurl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := unfurlResult{URL: u.String(), SuggestedType: classifyURL(u)}
+	if p := marketplacePlatform(u); p != "" {
+		out.Kind, out.Platform, out.SuggestedType = "marketplace", p, "marketplace"
+	}
 	if out.SuggestedType == "image" {
 		out.ImageURL = out.URL
 	}
@@ -213,6 +282,12 @@ func (s *Server) handleUnfurl(w http.ResponseWriter, r *http.Request) {
 		out.SuggestedType, out.ImageURL = "image", res.URL.String()
 	case strings.Contains(res.ContentType, "html") || res.ContentType == "":
 		out.pageMeta = parseMeta(res.Body, res.URL)
+	}
+	if !currencies[out.Currency] {
+		out.Price, out.Currency = nil, ""
+	}
+	if out.Kind == "marketplace" && (out.Price != nil || out.ogType == "product" || out.ogType == "og:product") {
+		out.SuggestedType = "product"
 	}
 	writeJSON(w, http.StatusOK, out)
 }
