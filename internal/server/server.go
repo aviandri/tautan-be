@@ -18,6 +18,7 @@ type Server struct {
 	eventLimiter   *rateLimiter
 	contactLimiter *rateLimiter
 	formLimiter    *rateLimiter
+	salts          saltCache
 	// Quiet disables per-request access logs (used by tests).
 	Quiet bool
 	cfg   config.Config
@@ -86,6 +87,11 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/audience.csv", s.handleAudienceCSV)
 				r.Get("/audience/{id}", s.handleContactDetail)
 				r.Get("/analytics/summary", s.handleAnalyticsSummary)
+				r.Get("/analytics/overview", s.handleAnalyticsOverview)
+				r.Get("/analytics/breakdown", s.handleAnalyticsBreakdown)
+				r.Get("/analytics/blocks", s.handleAnalyticsBlocks)
+				r.Get("/analytics/blocks/{id}/series", s.handleAnalyticsBlockSeries)
+				r.Get("/analytics/export.csv", s.handleAnalyticsExport)
 
 				r.Post("/tabs", s.handleCreateTab)
 				r.Put("/tabs/order", s.handleOrderTabs)
