@@ -396,7 +396,9 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 	default:
 		var ok bool
 		if v, check, sched, ok = sellBlock(typ); !ok {
-			return nil, fmt.Errorf("unknown block type %q", typ)
+			if v, check, sched, ok = creatorBlock(typ); !ok {
+				return nil, fmt.Errorf("unknown block type %q", typ)
+			}
 		}
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
