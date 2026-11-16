@@ -146,6 +146,9 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
+// handlePublicEvent records a view or click. The body is JSON whatever the
+// Content-Type, so navigator.sendBeacon (text/plain, a CORS "simple" request)
+// works with no preflight; keep it that way (beacon_test.go).
 func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Kind        string  `json:"kind"`
