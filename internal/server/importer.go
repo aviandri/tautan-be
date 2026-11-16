@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -252,7 +253,14 @@ func (s *Server) rehostImage(ctx context.Context, raw string) (string, error) {
 	if !ok {
 		return "", errors.New("not a supported image")
 	}
-	return s.storeUpload(bytes.NewReader(res.Body), ext)
+	u, err := s.storeUpload(bytes.NewReader(res.Body), ext)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.recordImage(ctx, path.Base(u), res.Body); err != nil { // dimensions + variants
+		return "", err
+	}
+	return u, nil
 }
 
 type importApplied struct {

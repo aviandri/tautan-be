@@ -23,6 +23,9 @@ type Server struct {
 	fetcher        *safeFetcher
 	images         imageWorker
 	reval          *revalidator
+	remote         remoteWorker
+	// InlineRemote resolves oEmbed/RSS content during the save request (tests, seeding).
+	InlineRemote bool
 	// InlineImages encodes image variants during the upload request (tests, seeding).
 	InlineImages bool
 	// Quiet disables per-request access logs (used by tests).
