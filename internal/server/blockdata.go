@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/mail"
 	"net/url"
@@ -191,26 +192,26 @@ func oneOf(field, v string, allowed map[string]bool) error {
 	if v == "" || allowed[v] {
 		return nil
 	}
-	return fmt.Errorf("%s has an unsupported value %q", field, v)
+	return ferr(field, "%s has an unsupported value %q", field, v)
 }
 
 func maxLen(field, v string, n int) error {
 	if utf8.RuneCountInString(v) > n {
-		return fmt.Errorf("%s must be at most %d characters", field, n)
+		return ferr(field, "%s must be at most %d characters", field, n)
 	}
 	return nil
 }
 
 func required(field, v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("%s is required", field)
+		return ferr(field, "%s is required", field)
 	}
 	return nil
 }
 
 func checkSchedule(s *Schedule) error {
 	if s != nil && s.StartAt != nil && s.EndAt != nil && !s.EndAt.After(*s.StartAt) {
-		return fmt.Errorf("schedule.end_at must be after schedule.start_at")
+		return ferr("schedule.end_at", "schedule.end_at must be after schedule.start_at")
 	}
 	return nil
 }
@@ -393,7 +394,10 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 		v, sched = d, func() *Schedule { return d.Schedule }
 		check = func() error { return checkForm(d) }
 	default:
-		return nil, fmt.Errorf("unknown block type %q", typ)
+		var ok bool
+		if v, check, sched, ok = sellBlock(typ); !ok {
+			return nil, fmt.Errorf("unknown block type %q", typ)
+		}
 	}
 	if err := json.Unmarshal(raw, v); err != nil {
 		return nil, fmt.Errorf("data does not match %s shape: %v", typ, err)
@@ -423,7 +427,7 @@ func checkURL(field, s string, required bool) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		if required {
-			return fmt.Errorf("%s is required", field)
+			return ferr(field, "%s is required", field)
 		}
 		return nil
 	}
@@ -432,18 +436,18 @@ func checkURL(field, s string, required bool) error {
 	}
 	u, err := url.Parse(s)
 	if err != nil {
-		return fmt.Errorf("%s is not a valid URL", field)
+		return ferr(field, "%s is not a valid URL", field)
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
 		if u.Host == "" {
-			return fmt.Errorf("%s is not a valid URL", field)
+			return ferr(field, "%s is not a valid URL", field)
 		}
 		return nil
 	case "mailto", "tel":
 		return nil
 	}
-	return fmt.Errorf("%s must be an http(s), mailto or tel URL", field)
+	return ferr(field, "%s must be an http(s), mailto or tel URL", field)
 }
 
 func firstErr(errs ...error) error {
@@ -453,4 +457,31 @@ func firstErr(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+// fieldError is a validation error tied to one field, so the editor can point at it.
+type fieldError struct {
+	field, msg string
+}
+
+func (e *fieldError) Error() string { return e.msg }
+
+// path turns "items[3].price" into "items.3.price".
+func (e *fieldError) path() string {
+	return strings.NewReplacer("[", ".", "]", "").Replace(e.field)
+}
+
+func ferr(field, format string, a ...any) error {
+	return &fieldError{field, fmt.Sprintf(format, a...)}
+}
+
+// dataErr wraps a validateBlockData error as a 400 invalid_data, with details
+// keyed by the failing field path (items.3.price) when known.
+func dataErr(err error) *httpErr {
+	he := badReq("invalid_data", "%s", err.Error())
+	var fe *fieldError
+	if errors.As(err, &fe) {
+		he.details = map[string]string{fe.path(): fe.msg}
+	}
+	return he
 }

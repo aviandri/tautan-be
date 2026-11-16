@@ -112,8 +112,15 @@ func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 		UTMSource   string  `json:"utm_source"`
 		UTMMedium   string  `json:"utm_medium"`
 		UTMCampaign string  `json:"utm_campaign"`
+		Meta        struct {
+			Action string `json:"action"`
+		} `json:"meta"`
 	}
 	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if in.Meta.Action != "" && (in.Kind != "click" || !clickActionRE.MatchString(in.Meta.Action)) {
+		writeError(w, http.StatusBadRequest, "invalid_action", "meta.action is only for click events and must look like buy or marketplace:shopee")
 		return
 	}
 	if in.Kind != "view" && in.Kind != "click" {
@@ -171,10 +178,10 @@ func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.db.Exec(ctx,
-		`INSERT INTO events (profile_id, block_id, kind, referrer, country, device, visitor_hash, browser, os, utm_source, utm_medium, utm_campaign, channel, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		`INSERT INTO events (profile_id, block_id, kind, referrer, country, device, visitor_hash, browser, os, utm_source, utm_medium, utm_campaign, channel, created_at, action)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		pid, blockID, in.Kind, host, country, deviceFromUA(ua), vh, browser, osName,
-		utm[0], utm[1], utm[2], channelFor(host, utm[0], utm[1], browser), s.now()); err != nil {
+		utm[0], utm[1], utm[2], channelFor(host, utm[0], utm[1], browser), s.now(), in.Meta.Action); err != nil {
 		s.internalError(w, err)
 		return
 	}

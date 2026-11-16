@@ -30,22 +30,23 @@ func isInvalidUUID(err error) bool {
 type httpErr struct {
 	status        int
 	code, message string
+	details       map[string]string
 }
 
 func (e *httpErr) Error() string { return e.message }
 
 func badReq(code, format string, a ...any) *httpErr {
-	return &httpErr{http.StatusBadRequest, code, fmt.Sprintf(format, a...)}
+	return &httpErr{status: http.StatusBadRequest, code: code, message: fmt.Sprintf(format, a...)}
 }
 
 func notFound(what string) *httpErr {
-	return &httpErr{http.StatusNotFound, "not_found", what + " not found"}
+	return &httpErr{status: http.StatusNotFound, code: "not_found", message: what + " not found"}
 }
 
 func (s *Server) writeErr(w http.ResponseWriter, err error) {
 	var he *httpErr
 	if errors.As(err, &he) {
-		writeError(w, he.status, he.code, he.message)
+		writeErrorDetails(w, he.status, he.code, he.message, he.details)
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
@@ -102,7 +103,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 	}
 	data, err := validateBlockData(in.Type, in.Data)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_data", err.Error())
+		s.writeErr(w, dataErr(err))
 		return
 	}
 	ctx, pid := r.Context(), profileID(r)
@@ -152,7 +153,7 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 		next := cur
 		if raw, ok := in["data"]; ok {
 			if next.Data, err = validateBlockData(cur.Type, raw); err != nil {
-				return badReq("invalid_data", "%s", err.Error())
+				return dataErr(err)
 			}
 		}
 		if raw, ok := in["is_visible"]; ok {

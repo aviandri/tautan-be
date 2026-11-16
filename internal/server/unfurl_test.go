@@ -172,3 +172,44 @@ func TestUnfurlEndpoint(t *testing.T) {
 	do(t, h, "POST", "/api/v1/unfurl", map[string]string{"url": "a@b.co"}, tok).expect(200)
 	do(t, h, "POST", "/api/v1/unfurl", map[string]string{"url": "a@b.co"}, tok).expect(429)
 }
+
+func TestMarketplaceUnfurlHelpers(t *testing.T) {
+	cases := map[string]string{
+		"https://shopee.co.id/kaos-i.1.2":          "shopee",
+		"https://shp.ee/abc":                       "shopee",
+		"https://www.tokopedia.com/toko/kaos":      "tokopedia",
+		"https://tk.tokopedia.com/ZSabc/":          "tokopedia",
+		"https://shop.tiktok.com/view/product/123": "tiktok_shop",
+		"https://www.tiktok.com/view/product/123":  "tiktok_shop",
+		"https://www.tiktok.com/@me/video/1":       "",
+		"https://s.lazada.co.id/abc":               "lazada",
+		"https://www.blibli.com/p/x":               "blibli",
+		"https://www.bukalapak.com/p/x":            "bukalapak",
+		"https://www.etsy.com/listing/1":           "etsy",
+		"https://amzn.to/x":                        "amazon",
+		"https://www.amazon.co.jp/dp/x":            "amazon",
+		"https://me.gumroad.com/l/x":               "gumroad",
+		"https://shopee-fake.example.com/x":        "",
+		"https://example.com/shopee":               "",
+	}
+	for raw, want := range cases {
+		u, _ := url.Parse(raw)
+		if got := marketplacePlatform(u); got != want {
+			t.Errorf("%s => %q, want %q", raw, got, want)
+		}
+	}
+	for in, want := range map[string]int64{"85000": 8500000, "85000.00": 8500000, "85,000.5": 8500050, "0.99": 99} {
+		if got := parsePriceMinor(in); got == nil || *got != want {
+			t.Errorf("parsePriceMinor(%q) = %v, want %d", in, got, want)
+		}
+	}
+	for _, in := range []string{"", "abc", "1.234", "-5", "1e5"} {
+		if parsePriceMinor(in) != nil {
+			t.Errorf("parsePriceMinor(%q) should fail", in)
+		}
+	}
+	m := parseMeta([]byte(`<head><meta property="og:type" content="product"><meta property="product:price:amount" content="85000"><meta property="product:price:currency" content="idr"></head>`), nil)
+	if m.Price == nil || *m.Price != 8500000 || m.Currency != "IDR" || m.ogType != "product" {
+		t.Errorf("meta = %+v", m)
+	}
+}

@@ -173,11 +173,15 @@ func bucketStart(t time.Time, interval string) time.Time {
 }
 
 // series returns zero-filled buckets in local time. extra narrows events
-// further (e.g. one block); it may reference the next arg index via %d.
+// further (e.g. one block); each %d in it is the arg index of the matching extraArg.
 func (s *Server) analyticsSeries(ctx context.Context, aq *analyticsQuery, pid, extra string, extraArgs ...any) ([]seriesRow, error) {
 	where, args := aq.base(pid, aq.from, aq.to)
 	if extra != "" {
-		where += " AND " + fmt.Sprintf(extra, len(args)+1)
+		idx := make([]any, len(extraArgs))
+		for i := range idx {
+			idx[i] = len(args) + 1 + i
+		}
+		where += " AND " + fmt.Sprintf(extra, idx...)
 		args = append(args, extraArgs...)
 	}
 	const layout = "2006-01-02 15:04:05"
@@ -318,13 +322,14 @@ func (s *Server) handleAnalyticsBreakdown(w http.ResponseWriter, r *http.Request
 }
 
 type blockStat struct {
-	BlockID   string    `json:"block_id"`
-	Type      string    `json:"type"`
-	Title     string    `json:"title"`
-	Clicks    int       `json:"clicks"`
-	IsVisible bool      `json:"is_visible"`
-	Deleted   bool      `json:"deleted"`
-	CreatedAt time.Time `json:"created_at"`
+	BlockID   string         `json:"block_id"`
+	Type      string         `json:"type"`
+	Title     string         `json:"title"`
+	Clicks    int            `json:"clicks"`
+	Actions   map[string]int `json:"actions"` // clicks by meta.action (P3-A); {} when none
+	IsVisible bool           `json:"is_visible"`
+	Deleted   bool           `json:"deleted"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 // analyticsBlocks lists the page's blocks (deleted ones included) with clicks in range.
@@ -335,18 +340,43 @@ func (s *Server) analyticsBlocks(ctx context.Context, aq *analyticsQuery, pid st
 	if clickedOnly {
 		having = "HAVING count(e.id) > 0"
 	}
-	rows, err := s.db.Query(ctx, fmt.Sprintf(`SELECT b.id, b.type, COALESCE(b.data->>'title', b.data->>'code', b.data->>'label', ''),
+	rows, err := s.db.Query(ctx, fmt.Sprintf(`SELECT b.id, b.type, COALESCE(b.data->>'title', b.data->>'name', b.data->>'code', b.data->>'label', ''),
 			count(e.id), b.is_visible, b.deleted_at IS NOT NULL, b.created_at
 		FROM blocks b LEFT JOIN events e ON e.block_id = b.id AND e.kind = 'click' AND %s
 		WHERE b.profile_id = $1 GROUP BY b.id %s ORDER BY 4 DESC, b.created_at LIMIT $%d`, where, having, len(args)), args...)
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (blockStat, error) {
-		var b blockStat
+	items, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (blockStat, error) {
+		b := blockStat{Actions: map[string]int{}}
 		err := r.Scan(&b.BlockID, &b.Type, &b.Title, &b.Clicks, &b.IsVisible, &b.Deleted, &b.CreatedAt)
 		return b, err
 	})
+	if err != nil || len(items) == 0 {
+		return items, err
+	}
+	byID := make(map[string]*blockStat, len(items))
+	for i := range items {
+		byID[items[i].BlockID] = &items[i]
+	}
+	where, args = aq.base(pid, aq.from, aq.to)
+	arows, err := s.db.Query(ctx, fmt.Sprintf(`SELECT e.block_id, e.action, count(*) FROM events e
+		WHERE e.kind = 'click' AND e.action <> '' AND %s GROUP BY 1, 2`, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer arows.Close()
+	for arows.Next() {
+		var id, action string
+		var n int
+		if err := arows.Scan(&id, &action, &n); err != nil {
+			return nil, err
+		}
+		if b := byID[id]; b != nil {
+			b.Actions[action] = n
+		}
+	}
+	return items, arows.Err()
 }
 
 func (s *Server) handleAnalyticsBlocks(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +410,12 @@ func (s *Server) handleAnalyticsBlockSeries(w http.ResponseWriter, r *http.Reque
 		s.internalError(w, err)
 		return
 	}
-	series, err := s.analyticsSeries(ctx, aq, pid, "e.block_id = $%d", id)
+	pred, extra := "e.block_id = $%d", []any{id}
+	if a := r.URL.Query().Get("action"); a != "" {
+		pred += " AND e.action = $%d"
+		extra = append(extra, a)
+	}
+	series, err := s.analyticsSeries(ctx, aq, pid, pred, extra...)
 	if err != nil {
 		s.internalError(w, err)
 		return
