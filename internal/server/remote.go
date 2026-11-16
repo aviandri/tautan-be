@@ -57,6 +57,9 @@ type (
 
 var (
 	remoteTypes = []string{"post_grid", "latest_video", "podcast"}
+	// Block types whose remote content is cached: the three above plus
+	// video/music posters.
+	cachedTypes = []string{"post_grid", "latest_video", "podcast", "video", "music"}
 	channelRE   = regexp.MustCompile(`^UC[A-Za-z0-9_-]{22}$`)
 
 	// Upstream endpoints; tests point them at local servers.
@@ -64,6 +67,10 @@ var (
 	tiktokOEmbedURL    = "https://www.tiktok.com/oembed"
 	instagramOEmbedURL = "https://graph.facebook.com/v21.0/instagram_oembed"
 	youtubeFeedURL     = "https://www.youtube.com/feeds/videos.xml"
+	youtubeThumbBase   = "https://i.ytimg.com"
+	vimeoOEmbedURL     = "https://vimeo.com/api/oembed.json"
+	spotifyOEmbedURL   = "https://open.spotify.com/oembed"
+	soundcloudOEmbed   = "https://soundcloud.com/oembed"
 )
 
 const (
@@ -177,6 +184,12 @@ func remoteKeys(typ string, data json.RawMessage) []string {
 		var d PodcastData
 		_ = json.Unmarshal(data, &d)
 		return []string{"rss:" + d.FeedURL}
+	case "video", "music":
+		var d EmbedData
+		_ = json.Unmarshal(data, &d)
+		if u := strings.TrimSpace(d.URL); u != "" && !strings.HasPrefix(u, "/uploads/") {
+			return []string{"media:" + u}
+		}
 	}
 	return nil
 }
@@ -184,7 +197,7 @@ func remoteKeys(typ string, data json.RawMessage) []string {
 // ttl is how long a successful result is kept before refreshing; failures
 // are retried after retry.
 func remoteTTL(key string) (ttl, retry time.Duration) {
-	if strings.HasPrefix(key, "post:") {
+	if strings.HasPrefix(key, "post:") || strings.HasPrefix(key, "media:") {
 		return 7 * 24 * time.Hour, 6 * time.Hour
 	}
 	return time.Hour, 15 * time.Minute
@@ -238,6 +251,8 @@ func (s *Server) resolveRemote(ctx context.Context, key string) (any, error) {
 		return s.resolveChannel(ctx, id)
 	case "rss":
 		return s.resolvePodcast(ctx, id)
+	case "media":
+		return s.resolveMedia(ctx, id)
 	}
 	return nil, fmt.Errorf("unknown remote key %q", key)
 }
@@ -534,10 +549,10 @@ func (s *Server) refreshRemote(ctx context.Context, key string) error {
 	v, err := s.resolveRemote(ctx, key)
 	now := s.now()
 	if err != nil {
-		// Posts degrade to a link card at once; feeds stay pending. A last good
+		// Posts and embeds degrade at once (link card / no poster); feeds stay pending. A last good
 		// result is never overwritten by a failure.
 		fallback := json.RawMessage("null")
-		if strings.HasPrefix(key, "post:") && v != nil {
+		if (strings.HasPrefix(key, "post:") || strings.HasPrefix(key, "media:")) && v != nil {
 			fallback, _ = json.Marshal(v)
 		}
 		_, dbErr := s.db.Exec(ctx, `INSERT INTO remote_cache (key, data, ok, error, fetched_at, next_at) VALUES ($1, $2, false, $3, $4, $5)
@@ -578,7 +593,7 @@ func (s *Server) revalidateReferencing(ctx context.Context, needle string) {
 // RefreshRemoteDue refreshes every key used by a live block that is missing
 // or past its next_at. Run hourly-ish by RunRemoteRefresher.
 func (s *Server) RefreshRemoteDue(ctx context.Context) (int, error) {
-	rows, err := s.db.Query(ctx, `SELECT type, data FROM blocks WHERE type = ANY($1) AND deleted_at IS NULL`, remoteTypes)
+	rows, err := s.db.Query(ctx, `SELECT type, data FROM blocks WHERE type = ANY($1) AND deleted_at IS NULL`, cachedTypes)
 	if err != nil {
 		return 0, err
 	}
@@ -691,6 +706,16 @@ func (s *Server) attachRemote(ctx context.Context, blocks []Block) error {
 				c.Videos = c.Videos[:min(len(c.Videos), d.Show.Count)]
 				return c
 			})
+		case "video", "music":
+			keys := remoteKeys(b.Type, b.Data)
+			if len(keys) == 0 {
+				continue
+			}
+			resolved = resolvedOrPending(cache, fetched, keys[0], func(raw json.RawMessage) any {
+				var m ResolvedMedia
+				_ = json.Unmarshal(raw, &m)
+				return m
+			})
 		case "podcast":
 			var d PodcastData
 			_ = json.Unmarshal(b.Data, &d)
@@ -713,6 +738,102 @@ func (s *Server) attachRemote(ctx context.Context, blocks []Block) error {
 		}
 	}
 	return nil
+}
+
+// ResolvedMedia is the poster (video) or cover art (music) of an embed,
+// re-hosted under /uploads/.
+type ResolvedMedia struct {
+	Provider string `json:"provider"` // youtube | vimeo | tiktok | spotify | soundcloud | other
+	Title    string `json:"title,omitempty"`
+	Author   string `json:"author,omitempty"`
+	Poster   string `json:"poster,omitempty"`
+	VideoID  string `json:"video_id,omitempty"` // youtube
+}
+
+var ytIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{6,20}$`)
+
+// youtubeID extracts the video id from watch, youtu.be, shorts, embed and live URLs.
+func youtubeID(u *url.URL) string {
+	host := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(u.Hostname()), "www."), "m.")
+	var id string
+	switch {
+	case host == "youtu.be":
+		id = strings.Trim(u.Path, "/")
+	case host == "youtube.com" || host == "youtube-nocookie.com" || host == "music.youtube.com":
+		if u.Path == "/watch" {
+			id = u.Query().Get("v")
+		} else {
+			for _, p := range []string{"/shorts/", "/embed/", "/live/"} {
+				if strings.HasPrefix(u.Path, p) {
+					id = strings.SplitN(strings.TrimPrefix(u.Path, p), "/", 2)[0]
+				}
+			}
+		}
+	}
+	if ytIDRE.MatchString(id) {
+		return id
+	}
+	return ""
+}
+
+func (s *Server) resolveMedia(ctx context.Context, raw string) (ResolvedMedia, error) {
+	out := ResolvedMedia{Provider: "other"}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return out, nil
+	}
+	host := strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.")
+	var endpoint string
+	switch {
+	case youtubeID(u) != "":
+		out.Provider, out.VideoID = "youtube", youtubeID(u)
+		endpoint = youtubeOEmbedURL + "?format=json&url=" + url.QueryEscape(raw)
+	case host == "vimeo.com" || host == "player.vimeo.com":
+		out.Provider = "vimeo"
+		endpoint = vimeoOEmbedURL + "?width=1280&url=" + url.QueryEscape(raw)
+	case host == "tiktok.com" || host == "vm.tiktok.com" || host == "vt.tiktok.com":
+		out.Provider = "tiktok"
+		endpoint = tiktokOEmbedURL + "?url=" + url.QueryEscape(raw)
+	case host == "open.spotify.com" || host == "spotify.com":
+		out.Provider = "spotify"
+		endpoint = spotifyOEmbedURL + "?url=" + url.QueryEscape(raw)
+	case host == "soundcloud.com" || host == "on.soundcloud.com":
+		out.Provider = "soundcloud"
+		endpoint = soundcloudOEmbed + "?format=json&url=" + url.QueryEscape(raw)
+	default:
+		return out, nil // no known poster source
+	}
+	var meta struct {
+		Title        string `json:"title"`
+		AuthorName   string `json:"author_name"`
+		ThumbnailURL string `json:"thumbnail_url"`
+	}
+	res, oerr := s.fetcher.fetch(ctx, endpoint, 256<<10, "application/json")
+	if oerr == nil && json.Unmarshal(res.Body, &meta) != nil {
+		oerr = errors.New("oembed: invalid JSON")
+	}
+	out.Title, out.Author = clip(meta.Title, 200), clip(meta.AuthorName, 80)
+	// YouTube: prefer the 1280x720 frame, which may not exist for old or small uploads.
+	if out.Provider == "youtube" {
+		if p, err := s.cachedRehost(ctx, youtubeThumbBase+"/vi/"+out.VideoID+"/maxresdefault.jpg"); err == nil {
+			out.Poster = p
+			return out, nil
+		}
+		if meta.ThumbnailURL == "" {
+			meta.ThumbnailURL = youtubeThumbBase + "/vi/" + out.VideoID + "/hqdefault.jpg"
+		}
+	}
+	if oerr != nil && meta.ThumbnailURL == "" {
+		return out, oerr
+	}
+	if meta.ThumbnailURL != "" {
+		p, err := s.cachedRehost(ctx, meta.ThumbnailURL)
+		if err != nil {
+			return out, err
+		}
+		out.Poster = p
+	}
+	return out, nil
 }
 
 func resolvedOrPending(cache map[string]json.RawMessage, fetched map[string]time.Time, key string, trim func(json.RawMessage) any) any {
