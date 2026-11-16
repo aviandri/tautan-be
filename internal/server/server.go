@@ -83,6 +83,8 @@ func (s *Server) Routes() http.Handler {
 
 				r.Post("/blocks", s.handleCreateBlock)
 				r.Put("/blocks/order", s.handleOrderBlocks)
+				r.Get("/blocks/deleted", s.handleListDeleted)
+				r.Post("/blocks/{id}/restore", s.handleRestoreBlock)
 				r.Patch("/blocks/{id}", s.handlePatchBlock)
 				r.Delete("/blocks/{id}", s.handleDeleteBlock)
 			})
