@@ -2,13 +2,16 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/mail"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,8 +51,48 @@ func (s *Server) handlePublicPage(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-cache")
-	writeJSON(w, http.StatusOK, page)
+	body, err := json.Marshal(page)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeCacheable(w, r, publicCacheControl, append(body, '\n'))
+}
+
+// publicCacheControl lets the frontend's CDN/ISR layer cache the page for a
+// minute and serve stale for 10 while it revalidates (perf budget).
+const publicCacheControl = "public, s-maxage=60, stale-while-revalidate=600"
+
+// writeCacheable sends a JSON body with a content-hash ETag and answers a
+// matching If-None-Match with 304. Scheduled blocks change the body, so the
+// ETag changes with them.
+func writeCacheable(w http.ResponseWriter, r *http.Request, cacheControl string, body []byte) {
+	sum := sha256.Sum256(body)
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:18]) + `"`
+	h := w.Header()
+	h.Set("ETag", etag)
+	h.Set("Cache-Control", cacheControl)
+	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	h.Set("Content-Type", "application/json")
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
+	}
+}
+
+// etagMatches implements the weak comparison If-None-Match uses.
+func etagMatches(header, etag string) bool {
+	for _, t := range strings.Split(header, ",") {
+		t = strings.TrimPrefix(strings.TrimSpace(t), "W/")
+		if t == "*" || t == etag {
+			return true
+		}
+	}
+	return false
 }
 
 var (
