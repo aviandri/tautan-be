@@ -95,9 +95,13 @@ func clientIP(r *http.Request) string {
 
 func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Kind     string  `json:"kind"`
-		BlockID  *string `json:"block_id"`
-		Referrer *string `json:"referrer"`
+		Kind        string  `json:"kind"`
+		BlockID     *string `json:"block_id"`
+		Referrer    *string `json:"referrer"`
+		PageURL     string  `json:"page_url"`
+		UTMSource   string  `json:"utm_source"`
+		UTMMedium   string  `json:"utm_medium"`
+		UTMCampaign string  `json:"utm_campaign"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -148,9 +152,19 @@ func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 	if !countryRE.MatchString(country) || country == "XX" {
 		country = ""
 	}
+	browser, osName := parseUA(ua)
+	host := normalizeHost(s.referrerHost(ref))
+	utm := utmFrom(in.PageURL, [3]string{in.UTMSource, in.UTMMedium, in.UTMCampaign})
+	vh, err := s.visitorHash(ctx, pid, clientIP(r), ua)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
 	if _, err := s.db.Exec(ctx,
-		`INSERT INTO events (profile_id, block_id, kind, referrer, country, device) VALUES ($1, $2, $3, $4, $5, $6)`,
-		pid, blockID, in.Kind, s.referrerHost(ref), country, deviceFromUA(ua)); err != nil {
+		`INSERT INTO events (profile_id, block_id, kind, referrer, country, device, visitor_hash, browser, os, utm_source, utm_medium, utm_campaign, channel, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		pid, blockID, in.Kind, host, country, deviceFromUA(ua), vh, browser, osName,
+		utm[0], utm[1], utm[2], channelFor(host, utm[0], utm[1], browser), s.now()); err != nil {
 		s.internalError(w, err)
 		return
 	}
