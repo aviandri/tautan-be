@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -84,17 +86,40 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileURL, err := s.storeUpload(f, ext)
+	var data []byte
+	var src io.Reader = f
+	_, isImage := uploadTypes[ctype]
+	if isImage {
+		if data, err = io.ReadAll(io.LimitReader(f, limit+1)); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if _, _, _, err := imageDims(data); err != nil {
+			writeError(w, http.StatusUnsupportedMediaType, "unsupported_type", "the image could not be read")
+			return
+		}
+		src = bytes.NewReader(data)
+	}
+	fileURL, err := s.storeUpload(src, ext)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	out := map[string]any{
 		"url":          fileURL,
 		"file_name":    safeFileName(hdr.Filename),
 		"size":         hdr.Size,
 		"content_type": strings.SplitN(ctype, ";", 2)[0],
-	})
+	}
+	if isImage {
+		info, err := s.recordImage(r.Context(), path.Base(fileURL), data)
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		out["width"], out["height"] = info.Width, info.Height
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 // serveUploads serves stored files without directory listings.
@@ -106,12 +131,19 @@ func (s *Server) serveUploads() http.Handler {
 			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if r.URL.Query().Has("w") && s.serveVariant(w, r, strings.TrimPrefix(r.URL.Path, "/uploads/")) {
+			return
+		}
 		switch strings.ToLower(filepath.Ext(r.URL.Path)) {
 		case ".png", ".jpg", ".gif", ".webp":
+		case ".avif":
+			w.Header().Set("Content-Type", "image/avif")
 		default:
 			w.Header().Set("Content-Disposition", "attachment")
 		}
-		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		fs.ServeHTTP(w, r)
 	})
 }

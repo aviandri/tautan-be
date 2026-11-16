@@ -246,6 +246,9 @@ type pageResponse struct {
 	Profile Profile `json:"profile"`
 	Tabs    []Tab   `json:"tabs"`
 	Blocks  []Block `json:"blocks"`
+	// Media maps each referenced "/uploads/<name>" image to its size and ready
+	// variant widths (perf 2b).
+	Media map[string]imageInfo `json:"media"`
 }
 
 func (s *Server) handleEditor(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +282,10 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 		out.Blocks = publicBlocks(out.Blocks, s.now())
 		out.Profile.Announcement = publicAnnouncement(out.Profile.Announcement, s.now())
 	}
+	if err != nil {
+		return out, err
+	}
+	out.Media, err = s.pageMedia(ctx, out)
 	return out, err
 }
 

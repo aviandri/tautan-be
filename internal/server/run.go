@@ -30,7 +30,13 @@ func Run(cfg config.Config) error {
 	}
 	defer pool.Close()
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: New(cfg, pool).Routes(), ReadHeaderTimeout: 10 * time.Second}
+	api := New(cfg, pool)
+	go func() {
+		if err := api.ResumeImages(ctx); err != nil {
+			log.Printf("resume image variants: %v", err)
+		}
+	}()
+	srv := &http.Server{Addr: cfg.Addr, Handler: api.Routes(), ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("tautan api listening on %s", cfg.Addr)

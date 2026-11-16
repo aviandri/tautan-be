@@ -21,6 +21,9 @@ type Server struct {
 	salts          saltCache
 	unfurlLimiter  *rateLimiter
 	fetcher        *safeFetcher
+	images         imageWorker
+	// InlineImages encodes image variants during the upload request (tests, seeding).
+	InlineImages bool
 	// Quiet disables per-request access logs (used by tests).
 	Quiet bool
 	cfg   config.Config
