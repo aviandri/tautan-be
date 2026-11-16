@@ -82,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 				r.Patch("/profile", s.handlePatchProfile)
 				r.Get("/profile/editor", s.handleEditor)
 				r.Post("/unfurl", s.handleUnfurl)
+				r.Post("/import", s.handleImport)
 				r.Post("/uploads", s.handleUpload)
 				r.Get("/contact-submissions", s.handleListContacts)
 				r.Get("/contact-submissions.csv", s.handleContactSubmissionsCSV)
