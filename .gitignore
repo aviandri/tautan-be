@@ -1,0 +1,5 @@
+bin/
+.devdata/
+uploads/
+*.test
+.env
