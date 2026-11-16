@@ -54,6 +54,21 @@ func (s *Server) Routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/me", s.handleMe)
+			r.Group(func(r chi.Router) {
+				r.Use(s.withProfile)
+				r.Patch("/profile", s.handlePatchProfile)
+				r.Get("/profile/editor", s.handleEditor)
+
+				r.Post("/tabs", s.handleCreateTab)
+				r.Put("/tabs/order", s.handleOrderTabs)
+				r.Patch("/tabs/{id}", s.handlePatchTab)
+				r.Delete("/tabs/{id}", s.handleDeleteTab)
+
+				r.Post("/blocks", s.handleCreateBlock)
+				r.Put("/blocks/order", s.handleOrderBlocks)
+				r.Patch("/blocks/{id}", s.handlePatchBlock)
+				r.Delete("/blocks/{id}", s.handleDeleteBlock)
+			})
 		})
 	})
 	return r
