@@ -74,6 +74,7 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/profile/editor", s.handleEditor)
 				r.Post("/uploads", s.handleUpload)
 				r.Get("/contact-submissions", s.handleListContacts)
+				r.Get("/analytics/summary", s.handleAnalyticsSummary)
 
 				r.Post("/tabs", s.handleCreateTab)
 				r.Put("/tabs/order", s.handleOrderTabs)
