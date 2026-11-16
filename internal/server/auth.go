@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/mail"
@@ -23,7 +24,7 @@ var reservedUsernames = map[string]bool{
 // validUsername normalises u to lowercase and reports whether it is allowed.
 func validUsername(u string) (string, bool) {
 	u = strings.ToLower(strings.TrimSpace(u))
-	return u, usernameRE.MatchString(u) && !reservedUsernames[u]
+	return u, usernameRE.MatchString(u) && !reservedUsernames[u] && !strings.HasPrefix(u, tempUsernamePrefix)
 }
 
 func isUniqueViolation(err error, constraint string) bool {
@@ -51,11 +52,19 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_password", "password must be 8 to 72 characters")
 		return
 	}
+	// The username is optional: without one the account gets a temporary
+	// username and claims a real one at the end of onboarding.
+	onboarding := Onboarding{UsernameClaimed: true}
 	username, ok := validUsername(in.Username)
+	if strings.TrimSpace(in.Username) == "" {
+		username, ok = tempUsername(), true
+		onboarding = Onboarding{UsernameClaimed: false, SuggestedUsername: s.suggestUsername(r.Context(), email)}
+	}
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid_username", "username must be 3-30 chars of a-z, 0-9, _ or . and not reserved")
 		return
 	}
+	onboardingJSON, _ := json.Marshal(onboarding)
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
 		s.internalError(w, err)
@@ -72,8 +81,8 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		p, err = scanProfile(tx.QueryRow(ctx,
-			`INSERT INTO profiles (user_id, username, display_name, theme) VALUES ($1, $2, $3, $4) RETURNING `+profileCols,
-			u.ID, username, username, DefaultTheme))
+			`INSERT INTO profiles (user_id, username, display_name, theme, onboarding) VALUES ($1, $2, $3, $4, $5) RETURNING `+profileCols,
+			u.ID, username, displayNameFor(username), DefaultTheme, onboardingJSON))
 		if err != nil {
 			return err
 		}
@@ -184,12 +193,27 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusOK, map[string]bool{"available": false})
 		return
 	}
-	var exists bool
-	if err := s.db.QueryRow(r.Context(), `SELECT EXISTS (SELECT 1 FROM profiles WHERE username = $1)`, u).Scan(&exists); err != nil {
+	exists, err := s.usernameTaken(r.Context(), u, "")
+	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"available": !exists})
+}
+
+// usernameTaken reports whether u is used by a profile other than exceptProfile.
+func (s *Server) usernameTaken(ctx context.Context, u, exceptProfile string) (bool, error) {
+	var taken bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM profiles WHERE username = $1 AND id::text <> $2)`, u, exceptProfile).Scan(&taken)
+	return taken, err
+}
+
+// displayNameFor is the initial display name: the username, or empty for a temporary one.
+func displayNameFor(username string) string {
+	if strings.HasPrefix(username, tempUsernamePrefix) {
+		return ""
+	}
+	return username
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,7 @@ type Profile struct {
 	IsPublished bool            `json:"is_published"`
 	Socials     json.RawMessage `json:"socials"`
 	SocialsPos  string          `json:"socials_position"`
+	Onboarding  json.RawMessage `json:"onboarding"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`
 }
@@ -52,12 +53,12 @@ type Block struct {
 // DefaultTheme is applied to new profiles; it must satisfy the full Theme shape.
 var DefaultTheme = json.RawMessage(`{"preset":"classic","bg":{"type":"color","value":"#f7f5f0"},"button":{"style":"fill","radius":12,"color":"#1f2937","text_color":"#ffffff"},"font":"Inter","text_color":"#1f2937"}`)
 
-const profileCols = `id, user_id, username, display_name, bio, NULLIF(avatar_url, ''), theme, seo, is_published, socials, socials_position, created_at, updated_at`
+const profileCols = `id, user_id, username, display_name, bio, NULLIF(avatar_url, ''), theme, seo, is_published, socials, socials_position, onboarding, created_at, updated_at`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanProfile(r rowScanner) (Profile, error) {
 	var p Profile
-	err := r.Scan(&p.ID, &p.UserID, &p.Username, &p.DisplayName, &p.Bio, &p.AvatarURL, &p.Theme, &p.SEO, &p.IsPublished, &p.Socials, &p.SocialsPos, &p.CreatedAt, &p.UpdatedAt)
+	err := r.Scan(&p.ID, &p.UserID, &p.Username, &p.DisplayName, &p.Bio, &p.AvatarURL, &p.Theme, &p.SEO, &p.IsPublished, &p.Socials, &p.SocialsPos, &p.Onboarding, &p.CreatedAt, &p.UpdatedAt)
 	return p, err
 }

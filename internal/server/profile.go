@@ -53,6 +53,8 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	sets := []string{}
 	args := []any{}
+	onboardingPatch := map[string]any{}
+	publishing := false
 	add := func(col string, v any) {
 		args = append(args, v)
 		sets = append(sets, fmt.Sprintf("%s = $%d", col, len(args)))
@@ -136,6 +138,7 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			add("is_published", v)
+			publishing = v
 		case "username":
 			var v string
 			_ = json.Unmarshal(raw, &v)
@@ -145,7 +148,36 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			add("username", u)
+			onboardingPatch["username_claimed"] = true
+			onboardingPatch["suggested_username"] = nil
+		case "onboarding":
+			patch, err := parseOnboardingPatch(raw, s.now())
+			if err != nil {
+				bad("invalid_onboarding", err.Error())
+				return
+			}
+			for k, v := range patch {
+				onboardingPatch[k] = v
+			}
 		}
+	}
+	if publishing && onboardingPatch["username_claimed"] == nil {
+		var claimed bool
+		if err := s.db.QueryRow(r.Context(), `SELECT COALESCE((onboarding->>'username_claimed')::boolean, true) FROM profiles WHERE id = $1`,
+			profileID(r)).Scan(&claimed); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if !claimed {
+			bad("username_not_claimed", "choose a username before publishing")
+			return
+		}
+	}
+	if len(onboardingPatch) > 0 {
+		enc, _ := json.Marshal(onboardingPatch)
+		args = append(args, enc)
+		// jsonb_strip_nulls drops keys patched to null (e.g. suggested_username once claimed).
+		sets = append(sets, fmt.Sprintf("onboarding = jsonb_strip_nulls(onboarding || $%d::jsonb)", len(args)))
 	}
 	sets = append(sets, "updated_at = now()")
 	args = append(args, profileID(r))

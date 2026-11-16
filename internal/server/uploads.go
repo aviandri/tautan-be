@@ -84,30 +84,13 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	name := hex.EncodeToString(b) + ext
-	if err := os.MkdirAll(s.cfg.UploadDir, 0o755); err != nil {
-		s.internalError(w, err)
-		return
-	}
-	dst, err := os.OpenFile(filepath.Join(s.cfg.UploadDir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	fileURL, err := s.storeUpload(f, ext)
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
-	if _, err := io.Copy(dst, f); err != nil {
-		dst.Close()
-		os.Remove(dst.Name())
-		s.internalError(w, err)
-		return
-	}
-	if err := dst.Close(); err != nil {
-		s.internalError(w, err)
-		return
-	}
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"url":          s.cfg.PublicBaseURL + "/uploads/" + name,
+		"url":          fileURL,
 		"file_name":    safeFileName(hdr.Filename),
 		"size":         hdr.Size,
 		"content_type": strings.SplitN(ctype, ";", 2)[0],
@@ -149,4 +132,29 @@ func safeFileName(n string) string {
 		return ""
 	}
 	return n
+}
+
+// storeUpload writes r to a new randomly named file and returns its public URL.
+func (s *Server) storeUpload(r io.Reader, ext string) (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	name := hex.EncodeToString(b) + ext
+	if err := os.MkdirAll(s.cfg.UploadDir, 0o755); err != nil {
+		return "", err
+	}
+	dst, err := os.OpenFile(filepath.Join(s.cfg.UploadDir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(dst, r); err != nil {
+		dst.Close()
+		os.Remove(dst.Name())
+		return "", err
+	}
+	if err := dst.Close(); err != nil {
+		return "", err
+	}
+	return s.cfg.PublicBaseURL + "/uploads/" + name, nil
 }
