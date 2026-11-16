@@ -7,8 +7,9 @@ import (
 )
 
 type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string            `json:"code"`
+	Message string            `json:"message"`
+	Details map[string]string `json:"details,omitempty"` // per-field messages
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -21,6 +22,10 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: msg}})
+}
+
+func writeErrorDetails(w http.ResponseWriter, status int, code, msg string, details map[string]string) {
+	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: msg, Details: details}})
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {

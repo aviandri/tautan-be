@@ -17,6 +17,7 @@ import (
 type Server struct {
 	eventLimiter   *rateLimiter
 	contactLimiter *rateLimiter
+	formLimiter    *rateLimiter
 	// Quiet disables per-request access logs (used by tests).
 	Quiet bool
 	cfg   config.Config
@@ -29,6 +30,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		cfg: cfg, db: pool, now: time.Now,
 		eventLimiter:   newRateLimiter(120, time.Minute),
 		contactLimiter: newRateLimiter(5, 10*time.Minute),
+		formLimiter:    newRateLimiter(10, 10*time.Minute),
 	}
 }
 
@@ -64,6 +66,8 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/public/{username}", s.handlePublicPage)
 		r.Post("/public/{username}/events", s.handlePublicEvent)
 		r.Post("/public/{username}/contact", s.handlePublicContact)
+		r.Post("/public/{username}/form", s.handlePublicForm)
+		r.Post("/public/{username}/subscribe", s.handlePublicSubscribe)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
@@ -74,6 +78,13 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/profile/editor", s.handleEditor)
 				r.Post("/uploads", s.handleUpload)
 				r.Get("/contact-submissions", s.handleListContacts)
+				r.Get("/contact-submissions.csv", s.handleContactSubmissionsCSV)
+				r.Get("/forms", s.handleListForms)
+				r.Get("/forms/{id}/submissions", s.handleFormSubmissions)
+				r.Get("/forms/{id}/submissions.csv", s.handleFormSubmissionsCSV)
+				r.Get("/audience", s.handleAudience)
+				r.Get("/audience.csv", s.handleAudienceCSV)
+				r.Get("/audience/{id}", s.handleContactDetail)
 				r.Get("/analytics/summary", s.handleAnalyticsSummary)
 
 				r.Post("/tabs", s.handleCreateTab)
