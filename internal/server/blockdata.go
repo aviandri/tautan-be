@@ -166,7 +166,7 @@ var blockTypes = map[string]bool{
 	"link": true, "text": true, "image": true, "video": true, "music": true,
 	"social_icons": true, "folder": true, "faq": true, "testimonial": true, "contact_form": true,
 	"heading": true, "divider": true, "file": true, "discount_code": true, "countdown": true,
-	"booking": true, "quote": true, "email_signup": true,
+	"booking": true, "quote": true, "email_signup": true, "form": true,
 }
 
 var (
@@ -388,6 +388,10 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 	case "email_signup":
 		d := &EmailSignupData{}
 		v, sched = d, func() *Schedule { return d.Schedule }
+	case "form":
+		d := &FormData{}
+		v, sched = d, func() *Schedule { return d.Schedule }
+		check = func() error { return checkForm(d) }
 	default:
 		return nil, fmt.Errorf("unknown block type %q", typ)
 	}

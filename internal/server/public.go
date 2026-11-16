@@ -207,9 +207,16 @@ func (s *Server) handlePublicContact(w http.ResponseWriter, r *http.Request) {
 	}
 	var id string
 	var created time.Time
-	if err := s.db.QueryRow(ctx,
-		`INSERT INTO contact_submissions (profile_id, block_id, name, email, message) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
-		pid, in.BlockID, in.Name, in.Email, in.Message).Scan(&id, &created); err != nil {
+	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		cid, err := upsertContact(ctx, tx, pid, in.Email, in.Name, false, in.BlockID, s.now())
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx,
+			`INSERT INTO contact_submissions (profile_id, block_id, name, email, message, contact_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+			pid, in.BlockID, in.Name, in.Email, in.Message, cid).Scan(&id, &created)
+	})
+	if err != nil {
 		s.internalError(w, err)
 		return
 	}
