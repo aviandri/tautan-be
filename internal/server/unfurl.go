@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -181,6 +182,41 @@ func marketplacePlatform(u *url.URL) string {
 	return ""
 }
 
+func isYouTubeChannelPage(u *url.URL) bool {
+	host := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(u.Hostname()), "www."), "m.")
+	if host != "youtube.com" {
+		return false
+	}
+	for _, p := range []string{"/@", "/c/", "/user/", "/channel/"} {
+		if strings.HasPrefix(u.Path, p) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	channelPathRE = regexp.MustCompile(`^/channel/(UC[A-Za-z0-9_-]{22})(/|$)`)
+	channelPageRE = []*regexp.Regexp{
+		regexp.MustCompile(`<link rel="canonical" href="https://www\.youtube\.com/channel/(UC[A-Za-z0-9_-]{22})"`),
+		regexp.MustCompile(`itemprop="(?:identifier|channelId)" content="(UC[A-Za-z0-9_-]{22})"`),
+		regexp.MustCompile(`"externalId":"(UC[A-Za-z0-9_-]{22})"`),
+	}
+)
+
+// channelIDFrom reads a channel id from a /channel/ path or the channel page HTML.
+func channelIDFrom(u *url.URL, body []byte) string {
+	if m := channelPathRE.FindStringSubmatch(u.Path); m != nil {
+		return m[1]
+	}
+	for _, re := range channelPageRE {
+		if m := re.FindSubmatch(body); m != nil {
+			return string(m[1])
+		}
+	}
+	return ""
+}
+
 // parsePriceMinor reads "85000", "85000.00" or "85,000.5" as minor units (2 decimals).
 func parsePriceMinor(s string) *int64 {
 	s = strings.ReplaceAll(strings.TrimSpace(s), ",", "")
@@ -219,9 +255,12 @@ type unfurlResult struct {
 	URL           string `json:"url"`
 	SuggestedType string `json:"suggested_type"`
 	DestKind      string `json:"dest_kind,omitempty"`
-	Kind          string `json:"kind,omitempty"`     // "marketplace" for store/product URLs
-	Platform      string `json:"platform,omitempty"` // marketplace platform id
-	Fetched       bool   `json:"fetched"`
+	Kind          string `json:"kind,omitempty"` // "marketplace" for store/product URLs
+	// YouTube channel pages (/@handle, /c/…, /user/…, /channel/UC…): the id for latest_video.
+	YouTubeChannelID string `json:"youtube_channel_id,omitempty"`
+	ChannelTitle     string `json:"channel_title,omitempty"`
+	Platform         string `json:"platform,omitempty"` // marketplace platform id
+	Fetched          bool   `json:"fetched"`
 	pageMeta
 }
 
@@ -266,6 +305,11 @@ func (s *Server) handleUnfurl(w http.ResponseWriter, r *http.Request) {
 	if out.SuggestedType == "image" {
 		out.ImageURL = out.URL
 	}
+	if isYouTubeChannelPage(u) {
+		if id := channelIDFrom(u, nil); id != "" { // known even if the fetch fails
+			out.YouTubeChannelID, out.SuggestedType = id, "latest_video"
+		}
+	}
 	res, err := s.fetcher.fetch(r.Context(), u.String(), maxHTMLBytes, "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5")
 	switch {
 	case errors.Is(err, errBlockedURL):
@@ -282,6 +326,11 @@ func (s *Server) handleUnfurl(w http.ResponseWriter, r *http.Request) {
 		out.SuggestedType, out.ImageURL = "image", res.URL.String()
 	case strings.Contains(res.ContentType, "html") || res.ContentType == "":
 		out.pageMeta = parseMeta(res.Body, res.URL)
+	}
+	if isYouTubeChannelPage(u) {
+		if id := channelIDFrom(u, res.Body); id != "" {
+			out.YouTubeChannelID, out.ChannelTitle, out.SuggestedType = id, out.Title, "latest_video"
+		}
 	}
 	if !currencies[out.Currency] {
 		out.Price, out.Currency = nil, ""
