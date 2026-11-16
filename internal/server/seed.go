@@ -174,6 +174,13 @@ func (s *Server) SeedHeavy(ctx context.Context, full bool) (string, error) {
 				{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}, {"url": "https://www.youtube.com/shorts/tPEE9ZwTmy0"}}}},
 			blk{"latest_video", map[string]any{"channel_id": "UC_x5XG1OV2P6uZZ5FSM9Ttw", "show": map[string]any{"count": 1}}},
 			blk{"podcast", map[string]any{"feed_url": "https://feeds.npr.org/510289/podcast.xml", "count": 3}},
+			// P3-C
+			blk{"poll", map[string]any{"question": "Which colour next?", "show_results": "after_vote",
+				"options": []map[string]any{{"label": "Sage"}, {"label": "Rust"}, {"label": "Navy"}}}},
+			blk{"ask_me", map[string]any{"prompt": "Ask us anything", "public_answers": true}},
+			blk{"lead_magnet", map[string]any{"title": "Free size guide", "file_url": "https://example.com/size-guide.pdf", "cover_url": p3}},
+			blk{"giveaway", map[string]any{"title": "Win a tee", "prize": "1 Classic Tee", "ends_at": end,
+				"steps": []map[string]any{{"label": "Follow us", "url": "https://instagram.com/perfdemo"}}}},
 		)
 	}
 	for _, b := range blocks {

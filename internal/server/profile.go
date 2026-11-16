@@ -291,6 +291,9 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 	if err = s.attachRemote(ctx, out.Blocks); err != nil {
 		return out, err
 	}
+	if err = s.attachEngage(ctx, out.Blocks, visibleOnly); err != nil {
+		return out, err
+	}
 	out.Media, err = s.pageMedia(ctx, out)
 	return out, err
 }

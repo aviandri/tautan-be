@@ -458,7 +458,7 @@ func checkBlockRefs(ctx context.Context, q queryRower, pid, typ string, data jso
 	}
 	var ok bool
 	if err := q.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND profile_id = $2
-		AND type IN ('form', 'contact_form') AND deleted_at IS NULL)`, id, pid).Scan(&ok); err != nil {
+		AND type IN ('form', 'contact_form', 'email_signup') AND deleted_at IS NULL)`, id, pid).Scan(&ok); err != nil {
 		return err
 	}
 	if !ok {

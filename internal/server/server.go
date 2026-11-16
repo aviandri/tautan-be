@@ -20,6 +20,8 @@ type Server struct {
 	formLimiter    *rateLimiter
 	salts          saltCache
 	unfurlLimiter  *rateLimiter
+	engageLimiter  *rateLimiter
+	askLimiter     *rateLimiter
 	fetcher        *safeFetcher
 	images         imageWorker
 	reval          *revalidator
@@ -42,6 +44,8 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		contactLimiter: newRateLimiter(5, 10*time.Minute),
 		formLimiter:    newRateLimiter(10, 10*time.Minute),
 		unfurlLimiter:  newRateLimiter(30, time.Minute),
+		engageLimiter:  newRateLimiter(30, 10*time.Minute),
+		askLimiter:     newRateLimiter(5, 10*time.Minute),
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
 	}
@@ -82,6 +86,11 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/public/{username}/form", s.handlePublicForm)
 		r.Post("/public/{username}/subscribe", s.handlePublicSubscribe)
 		r.Get("/public/{username}/vcard", s.handleVCard)
+		r.Post("/public/{username}/blocks/{id}/vote", s.handlePollVote)
+		r.Post("/public/{username}/blocks/{id}/ask", s.handleAsk)
+		r.Post("/public/{username}/blocks/{id}/lead", s.handleLead)
+		r.Post("/public/{username}/blocks/{id}/enter", s.handleGiveawayEnter)
+		r.Get("/public/{username}/download/{token}", s.handleLeadDownload)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
@@ -119,6 +128,13 @@ func (s *Server) Routes() http.Handler {
 				r.With(s.revalidatesPage).Post("/blocks/{id}/restore", s.handleRestoreBlock)
 				r.With(s.revalidatesPage).Patch("/blocks/{id}", s.handlePatchBlock)
 				r.With(s.revalidatesPage).Delete("/blocks/{id}", s.handleDeleteBlock)
+
+				r.Get("/polls/{id}/results", s.handlePollResults)
+				r.Get("/questions", s.handleListQuestions)
+				r.With(s.revalidatesPage).Patch("/questions/{id}", s.handlePatchQuestion)
+				r.With(s.revalidatesPage).Delete("/questions/{id}", s.handleDeleteQuestion)
+				r.Get("/giveaways/{id}", s.handleGiveaway)
+				r.With(s.revalidatesPage).Post("/giveaways/{id}/draw", s.handleGiveawayDraw)
 			})
 		})
 	})
