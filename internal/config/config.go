@@ -18,6 +18,7 @@ type Config struct {
 	PublicBaseURL string        // base URL used to build absolute upload URLs
 	CookieSecure  bool          // set Secure on the refresh cookie
 	CountryHeader string        // request header carrying the visitor country code
+	TrustProxy    bool          // honour X-Forwarded-For / X-Real-IP (only behind a proxy you control)
 }
 
 func Load() Config {
@@ -32,6 +33,7 @@ func Load() Config {
 		PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 		CookieSecure:  env("COOKIE_SECURE", "false") == "true",
 		CountryHeader: env("COUNTRY_HEADER", "CF-IPCountry"),
+		TrustProxy:    env("TRUST_PROXY", "false") == "true",
 	}
 }
 

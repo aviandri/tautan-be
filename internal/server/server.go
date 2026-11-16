@@ -15,6 +15,8 @@ import (
 )
 
 type Server struct {
+	eventLimiter   *rateLimiter
+	contactLimiter *rateLimiter
 	// Quiet disables per-request access logs (used by tests).
 	Quiet bool
 	cfg   config.Config
@@ -23,12 +25,19 @@ type Server struct {
 }
 
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
-	return &Server{cfg: cfg, db: pool, now: time.Now}
+	return &Server{
+		cfg: cfg, db: pool, now: time.Now,
+		eventLimiter:   newRateLimiter(120, time.Minute),
+		contactLimiter: newRateLimiter(5, 10*time.Minute),
+	}
 }
 
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.RealIP)
+	r.Use(middleware.RequestID)
+	if s.cfg.TrustProxy {
+		r.Use(middleware.RealIP)
+	}
 	if !s.Quiet {
 		r.Use(middleware.Logger)
 	}
@@ -52,6 +61,10 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/auth/logout", s.handleLogout)
 		r.Get("/auth/username-available", s.handleUsernameAvailable)
 
+		r.Get("/public/{username}", s.handlePublicPage)
+		r.Post("/public/{username}/events", s.handlePublicEvent)
+		r.Post("/public/{username}/contact", s.handlePublicContact)
+
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/me", s.handleMe)
@@ -60,6 +73,7 @@ func (s *Server) Routes() http.Handler {
 				r.Patch("/profile", s.handlePatchProfile)
 				r.Get("/profile/editor", s.handleEditor)
 				r.Post("/uploads", s.handleUpload)
+				r.Get("/contact-submissions", s.handleListContacts)
 
 				r.Post("/tabs", s.handleCreateTab)
 				r.Put("/tabs/order", s.handleOrderTabs)
