@@ -24,8 +24,18 @@ func (s *Server) publishedProfileID(ctx context.Context, username string) (strin
 }
 
 func (s *Server) handlePublicPage(w http.ResponseWriter, r *http.Request) {
-	pid, err := s.publishedProfileID(r.Context(), chi.URLParam(r, "username"))
+	username := chi.URLParam(r, "username")
+	pid, err := s.publishedProfileID(r.Context(), username)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// A renamed page answers its old username with a permanent redirect.
+		if target, err := s.redirectTarget(r.Context(), username); err == nil {
+			w.Header().Set("Location", "/api/v1/public/"+target)
+			writeJSON(w, http.StatusMovedPermanently, map[string]any{
+				"error":       apiError{Code: "moved", Message: "this page has a new username"},
+				"redirect_to": target,
+			})
+			return
+		}
 		writeError(w, http.StatusNotFound, "not_found", "page not found")
 		return
 	}

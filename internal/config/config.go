@@ -19,6 +19,7 @@ type Config struct {
 	CookieSecure  bool          // set Secure on the refresh cookie
 	CountryHeader string        // request header carrying the visitor country code
 	TrustProxy    bool          // honour X-Forwarded-For / X-Real-IP (only behind a proxy you control)
+	AppBaseURL    string        // public FE origin, used for page URLs (vCard)
 }
 
 func Load() Config {
@@ -34,6 +35,7 @@ func Load() Config {
 		CookieSecure:  env("COOKIE_SECURE", "false") == "true",
 		CountryHeader: env("COUNTRY_HEADER", "CF-IPCountry"),
 		TrustProxy:    env("TRUST_PROXY", "false") == "true",
+		AppBaseURL:    strings.TrimRight(env("APP_BASE_URL", "http://localhost:3000"), "/"),
 	}
 }
 

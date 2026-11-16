@@ -65,6 +65,15 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	onboardingJSON, _ := json.Marshal(onboarding)
+	if onboarding.UsernameClaimed {
+		if taken, err := s.usernameTaken(r.Context(), username, ""); err != nil {
+			s.internalError(w, err)
+			return
+		} else if taken {
+			writeError(w, http.StatusConflict, "username_taken", "this username is taken")
+			return
+		}
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
 		s.internalError(w, err)
@@ -204,7 +213,8 @@ func (s *Server) handleUsernameAvailable(w http.ResponseWriter, r *http.Request)
 // usernameTaken reports whether u is used by a profile other than exceptProfile.
 func (s *Server) usernameTaken(ctx context.Context, u, exceptProfile string) (bool, error) {
 	var taken bool
-	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM profiles WHERE username = $1 AND id::text <> $2)`, u, exceptProfile).Scan(&taken)
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM profiles WHERE username = $1 AND id::text <> $2)
+		OR EXISTS (SELECT 1 FROM username_redirects WHERE old_username = $1 AND profile_id::text <> $2)`, u, exceptProfile).Scan(&taken)
 	return taken, err
 }
 
