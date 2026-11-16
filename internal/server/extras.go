@@ -84,11 +84,13 @@ func normalizeAnnouncement(raw json.RawMessage, prevID string) (json.RawMessage,
 // ---------- settings ----------
 
 type PageSettings struct {
-	GA4ID           string `json:"ga4_id,omitempty"`
-	MetaPixelID     string `json:"meta_pixel_id,omitempty"`
-	Language        string `json:"language,omitempty"`
-	ShowShare       bool   `json:"show_share,omitempty"`
-	ShowSaveContact bool   `json:"show_save_contact,omitempty"`
+	GA4ID       string `json:"ga4_id,omitempty"`
+	MetaPixelID string `json:"meta_pixel_id,omitempty"`
+	Language    string `json:"language,omitempty"`
+	// Pointers so an explicit false is stored and returned; absent means "not set" (the FE
+	// treats an unset show_share as on).
+	ShowShare       *bool  `json:"show_share,omitempty"`
+	ShowSaveContact *bool  `json:"show_save_contact,omitempty"`
 	ContactEmail    string `json:"contact_email,omitempty"` // used in the vCard
 	ContactPhone    string `json:"contact_phone,omitempty"`
 }

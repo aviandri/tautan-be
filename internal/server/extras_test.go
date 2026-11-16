@@ -79,6 +79,21 @@ func TestSettings(t *testing.T) {
 	if !jsonEq(p.Settings, `{"ga4_id":"G-ABC1234","meta_pixel_id":"123456789012","language":"id","show_share":true,"show_save_contact":true,"contact_email":"a@b.co","contact_phone":"+62 812 3456"}`) {
 		t.Errorf("settings = %s", p.Settings)
 	}
+	// An explicit false is stored and returned (Share is on by default in the FE, so false must
+	// not collapse into "unset"); a missing key stays missing.
+	do(t, h, "PATCH", "/api/v1/profile", `{"settings":{"show_share":false,"show_save_contact":false},"is_published":true}`, tok).expect(200).json(&p)
+	if !jsonEq(p.Settings, `{"show_share":false,"show_save_contact":false}`) {
+		t.Errorf("explicit false settings = %s", p.Settings)
+	}
+	var page pageResponse
+	do(t, h, "GET", "/api/v1/public/alice", nil).expect(200).json(&page)
+	if !jsonEq(page.Profile.Settings, `{"show_share":false,"show_save_contact":false}`) {
+		t.Errorf("public settings = %s", page.Profile.Settings)
+	}
+	do(t, h, "PATCH", "/api/v1/profile", `{"settings":{"language":"en"}}`, tok).expect(200).json(&p)
+	if !jsonEq(p.Settings, `{"language":"en"}`) {
+		t.Errorf("unset show_share should be omitted: %s", p.Settings)
+	}
 	for _, bad := range []string{
 		`{"ga4_id":"UA-12345-1"}`, `{"ga4_id":"G-ABC');alert(1);//"}`, `{"meta_pixel_id":"12ab"}`,
 		`{"language":"Indonesian"}`, `{"contact_email":"nope"}`, `{"contact_phone":"call me"}`,
