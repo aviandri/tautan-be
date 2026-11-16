@@ -52,6 +52,7 @@ type (
 	}
 	TextData struct {
 		Content  string    `json:"content"`
+		Style    string    `json:"style,omitempty"` // card | sticky_note | speech_bubble | torn_paper | chalkboard
 		Schedule *Schedule `json:"schedule,omitempty"`
 	}
 	ImageData struct {
@@ -72,6 +73,7 @@ type (
 	}
 	SocialIconsData struct {
 		Items    []SocialIcon `json:"items"`
+		Variant  string       `json:"variant,omitempty"` // icons (default) | donate
 		Schedule *Schedule    `json:"schedule,omitempty"`
 	}
 	FolderData struct {
@@ -126,13 +128,14 @@ type (
 		Schedule *Schedule `json:"schedule,omitempty"`
 	}
 	DiscountCodeData struct {
-		Code        string    `json:"code"`
-		Description string    `json:"description,omitempty"`
-		Brand       string    `json:"brand,omitempty"`
-		Discount    string    `json:"discount,omitempty"` // badge, e.g. "20% off"
-		URL         string    `json:"url,omitempty"`
-		ButtonLabel string    `json:"button_label,omitempty"`
-		Schedule    *Schedule `json:"schedule,omitempty"`
+		Code        string         `json:"code"`
+		Description string         `json:"description,omitempty"`
+		Brand       string         `json:"brand,omitempty"`
+		Discount    string         `json:"discount,omitempty"` // badge, e.g. "20% off"
+		URL         string         `json:"url,omitempty"`
+		ButtonLabel string         `json:"button_label,omitempty"`
+		Schedule    *Schedule      `json:"schedule,omitempty"`
+		Codes       []DiscountCode `json:"codes,omitempty"` // several codes shown in sequence (swipe)
 	}
 	CountdownData struct {
 		EndsAt       time.Time `json:"ends_at"`
@@ -276,6 +279,7 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 	case "text":
 		d := &TextData{}
 		v, sched = d, func() *Schedule { return d.Schedule }
+		check = func() error { return oneOf("style", d.Style, textStyles) }
 	case "image":
 		d := &ImageData{}
 		v, sched = d, func() *Schedule { return d.Schedule }
@@ -299,7 +303,13 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 					return err
 				}
 			}
-			return nil
+			if d.Variant == "icons" {
+				d.Variant = ""
+			}
+			if d.Variant == "" {
+				return nil
+			}
+			return checkSocialVariant(d)
 		}
 	case "folder":
 		d := &FolderData{}
@@ -358,7 +368,7 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 		v, sched = d, func() *Schedule { return d.Schedule }
 		check = func() error {
 			return firstErr(maxLen("code", d.Code, 40), maxLen("description", d.Description, 300),
-				maxLen("discount", d.Discount, 24), checkURL("url", d.URL, false))
+				maxLen("discount", d.Discount, 24), checkURL("url", d.URL, false), checkDiscountCodes(d.Codes))
 		}
 	case "countdown":
 		d := &CountdownData{}
@@ -399,7 +409,9 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 			if v, check, sched, ok = creatorBlock(typ); !ok {
 				if v, check, sched, ok = remoteBlock(typ); !ok {
 					if v, check, sched, ok = engageBlock(typ); !ok {
-						return nil, fmt.Errorf("unknown block type %q", typ)
+						if v, check, sched, ok = layoutBlock(typ); !ok {
+							return nil, fmt.Errorf("unknown block type %q", typ)
+						}
 					}
 				}
 			}

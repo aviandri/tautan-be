@@ -181,6 +181,14 @@ func (s *Server) SeedHeavy(ctx context.Context, full bool) (string, error) {
 			blk{"lead_magnet", map[string]any{"title": "Free size guide", "file_url": "https://example.com/size-guide.pdf", "cover_url": p3}},
 			blk{"giveaway", map[string]any{"title": "Win a tee", "prize": "1 Classic Tee", "ends_at": end,
 				"steps": []map[string]any{{"label": "Follow us", "url": "https://instagram.com/perfdemo"}}}},
+			// P3-D
+			blk{"spotlight", map[string]any{"image_url": hero, "eyebrow": "New", "headline": "The Fall drop", "text": "Out Friday 20:00",
+				"button": map[string]any{"label": "Shop now", "url": "https://example.com/shop"}}},
+			blk{"marquee", map[string]any{"text": "FREE SHIPPING ALL JAVA"}},
+			blk{"timeline", map[string]any{"items": []map[string]any{{"title": "Order on WhatsApp"}, {"title": "Pay via QRIS", "highlight": true}, {"title": "Ships in 2 days"}}}},
+			blk{"resume", map[string]any{"items": []map[string]any{{"role": "Founder", "company": "Perf Demo", "start": "2021-01", "current": true}}}},
+			blk{"before_after", map[string]any{"before_url": p1, "after_url": p2, "before_label": "Before", "after_label": "After"}},
+			blk{"map", map[string]any{"label": "Perf Demo Store", "address": "Jl. Braga 10", "area": "Bandung", "lat": -6.917464, "lng": 107.609811}},
 		)
 	}
 	for _, b := range blocks {
