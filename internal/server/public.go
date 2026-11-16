@@ -129,7 +129,7 @@ func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 	var blockID *string
 	if in.Kind == "click" {
 		var ok bool
-		err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND profile_id = $2)`, *in.BlockID, pid).Scan(&ok)
+		err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND profile_id = $2 AND deleted_at IS NULL)`, *in.BlockID, pid).Scan(&ok)
 		if isInvalidUUID(err) || (err == nil && !ok) {
 			writeError(w, http.StatusBadRequest, "invalid_block", "block not found on this page")
 			return
@@ -195,7 +195,7 @@ func (s *Server) handlePublicContact(w http.ResponseWriter, r *http.Request) {
 	}
 	var ok bool
 	err = s.db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND profile_id = $2 AND type = 'contact_form' AND is_visible)`,
+		`SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND profile_id = $2 AND type = 'contact_form' AND is_visible AND deleted_at IS NULL)`,
 		in.BlockID, pid).Scan(&ok)
 	if isInvalidUUID(err) || (err == nil && !ok) {
 		writeError(w, http.StatusBadRequest, "invalid_block", "contact form not found on this page")

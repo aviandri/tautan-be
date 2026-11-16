@@ -44,6 +44,7 @@ type Block struct {
 	Data      json.RawMessage `json:"data"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+	DeletedAt *time.Time      `json:"deleted_at,omitempty"`
 }
 
 // DefaultTheme is applied to new profiles; it must satisfy the full Theme shape.

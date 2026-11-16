@@ -6,17 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const blockCols = `b.id, b.profile_id, b.tab_id, b.parent_id, b.type, b.position, b.is_visible, b.data, b.created_at, b.updated_at`
+const blockCols = `b.id, b.profile_id, b.tab_id, b.parent_id, b.type, b.position, b.is_visible, b.data, b.created_at, b.updated_at, b.deleted_at`
 
 func scanBlock(r rowScanner) (Block, error) {
 	var b Block
-	err := r.Scan(&b.ID, &b.ProfileID, &b.TabID, &b.ParentID, &b.Type, &b.Position, &b.IsVisible, &b.Data, &b.CreatedAt, &b.UpdatedAt)
+	err := r.Scan(&b.ID, &b.ProfileID, &b.TabID, &b.ParentID, &b.Type, &b.Position, &b.IsVisible, &b.Data, &b.CreatedAt, &b.UpdatedAt, &b.DeletedAt)
 	return b, err
 }
 
@@ -60,7 +61,7 @@ func resolveParent(ctx context.Context, tx pgx.Tx, pid, parentID, childType stri
 		return "", badReq("invalid_parent", "only link blocks can be placed in a folder")
 	}
 	var typ, tabID string
-	err := tx.QueryRow(ctx, `SELECT type, tab_id FROM blocks WHERE id = $1 AND profile_id = $2`, parentID, pid).Scan(&typ, &tabID)
+	err := tx.QueryRow(ctx, `SELECT type, tab_id FROM blocks WHERE id = $1 AND profile_id = $2 AND deleted_at IS NULL`, parentID, pid).Scan(&typ, &tabID)
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 		return "", badReq("invalid_parent", "parent block not found")
 	}
@@ -83,7 +84,7 @@ func checkTab(ctx context.Context, tx pgx.Tx, pid, tabID string) error {
 }
 
 const nextPositionSQL = `(SELECT COALESCE(MAX(position) + 1, 0) FROM blocks
-	WHERE profile_id = $1 AND tab_id = $2 AND parent_id IS NOT DISTINCT FROM $3)`
+	WHERE profile_id = $1 AND tab_id = $2 AND parent_id IS NOT DISTINCT FROM $3 AND deleted_at IS NULL)`
 
 func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -141,7 +142,7 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 	ctx, pid, id := r.Context(), profileID(r), chi.URLParam(r, "id")
 	var out Block
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		cur, err := scanBlock(tx.QueryRow(ctx, `SELECT `+blockCols+` FROM blocks b WHERE b.id = $1 AND b.profile_id = $2 FOR UPDATE`, id, pid))
+		cur, err := scanBlock(tx.QueryRow(ctx, `SELECT `+blockCols+` FROM blocks b WHERE b.id = $1 AND b.profile_id = $2 AND b.deleted_at IS NULL FOR UPDATE`, id, pid))
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 			return notFound("block")
 		}
@@ -223,16 +224,99 @@ func sameParent(a, b *string) bool {
 	return *a == *b
 }
 
+// handleDeleteBlock soft-deletes a block, plus a folder's live children with
+// the same timestamp so they are restored together.
 func (s *Server) handleDeleteBlock(w http.ResponseWriter, r *http.Request) {
-	tag, err := s.db.Exec(r.Context(), `DELETE FROM blocks WHERE id = $1 AND profile_id = $2`, chi.URLParam(r, "id"), profileID(r))
-	if err == nil && tag.RowsAffected() == 0 {
-		err = notFound("block")
-	}
+	ctx, pid, id, ts := r.Context(), profileID(r), chi.URLParam(r, "id"), s.now()
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE blocks SET deleted_at = $3 WHERE id = $1 AND profile_id = $2 AND deleted_at IS NULL`, id, pid, ts)
+		if isInvalidUUID(err) || (err == nil && tag.RowsAffected() == 0) {
+			return notFound("block")
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE blocks SET deleted_at = $2 WHERE parent_id = $1 AND deleted_at IS NULL`, id, ts)
+		return err
+	})
 	if err != nil {
 		s.writeErr(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+const deletedRetention = 30 * 24 * time.Hour
+
+// handleListDeleted lists restorable blocks, newest first. Children deleted
+// together with their folder are restored with it and so aren't listed.
+// Blocks deleted more than 30 days ago are purged.
+func (s *Server) handleListDeleted(w http.ResponseWriter, r *http.Request) {
+	ctx, pid := r.Context(), profileID(r)
+	if _, err := s.db.Exec(ctx, `DELETE FROM blocks WHERE profile_id = $1 AND deleted_at < $2`, pid, s.now().Add(-deletedRetention)); err != nil {
+		s.internalError(w, err)
+		return
+	}
+	rows, err := s.db.Query(ctx, `SELECT `+blockCols+` FROM blocks b
+		LEFT JOIN blocks p ON p.id = b.parent_id
+		WHERE b.profile_id = $1 AND b.deleted_at IS NOT NULL
+		  AND NOT (p.id IS NOT NULL AND p.deleted_at = b.deleted_at)
+		ORDER BY b.deleted_at DESC, b.id LIMIT 200`, pid)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	blocks, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Block, error) { return scanBlock(r) })
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"blocks": blocks})
+}
+
+// handleRestoreBlock undeletes a block at the end of its group. If its folder is
+// gone or still deleted it returns to the top level of its tab.
+func (s *Server) handleRestoreBlock(w http.ResponseWriter, r *http.Request) {
+	ctx, pid, id := r.Context(), profileID(r), chi.URLParam(r, "id")
+	var out Block
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		cur, err := scanBlock(tx.QueryRow(ctx, `SELECT `+blockCols+` FROM blocks b WHERE b.id = $1 AND b.profile_id = $2 AND b.deleted_at IS NOT NULL FOR UPDATE`, id, pid))
+		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+			return notFound("deleted block")
+		}
+		if err != nil {
+			return err
+		}
+		parent := cur.ParentID
+		if parent != nil {
+			var live bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM blocks WHERE id = $1 AND deleted_at IS NULL)`, *parent).Scan(&live); err != nil {
+				return err
+			}
+			if !live {
+				parent = nil
+			}
+		}
+		var pos int
+		if err := tx.QueryRow(ctx, `SELECT `+nextPositionSQL, pid, cur.TabID, parent).Scan(&pos); err != nil {
+			return err
+		}
+		out, err = scanBlock(tx.QueryRow(ctx,
+			`UPDATE blocks b SET deleted_at = NULL, parent_id = $3, position = $4, updated_at = now()
+			 WHERE b.id = $1 AND b.profile_id = $2 RETURNING `+blockCols, id, pid, parent, pos))
+		if err != nil {
+			return err
+		}
+		if cur.Type == "folder" {
+			_, err = tx.Exec(ctx, `UPDATE blocks SET deleted_at = NULL WHERE parent_id = $1 AND deleted_at = $2`, id, *cur.DeletedAt)
+		}
+		return err
+	})
+	if err != nil {
+		s.writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleOrderBlocks sets positions for one sibling group: the top-level blocks
@@ -256,7 +340,7 @@ func (s *Server) handleOrderBlocks(w http.ResponseWriter, r *http.Request) {
 		}
 		// The group is defined by the first id's parent.
 		var parent *string
-		err := tx.QueryRow(ctx, `SELECT parent_id FROM blocks WHERE id = $1 AND profile_id = $2 AND tab_id = $3`, in.IDs[0], pid, in.TabID).Scan(&parent)
+		err := tx.QueryRow(ctx, `SELECT parent_id FROM blocks WHERE id = $1 AND profile_id = $2 AND tab_id = $3 AND deleted_at IS NULL`, in.IDs[0], pid, in.TabID).Scan(&parent)
 		if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 			return badReq("order_mismatch", "ids must belong to the given tab")
 		}
@@ -266,7 +350,7 @@ func (s *Server) handleOrderBlocks(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		if err := tx.QueryRow(ctx,
 			`SELECT COALESCE(array_agg(id::text ORDER BY id::text), '{}') = (SELECT COALESCE(array_agg(x ORDER BY x), '{}') FROM unnest($4::text[]) x)
-			 FROM (SELECT id FROM blocks WHERE profile_id = $1 AND tab_id = $2 AND parent_id IS NOT DISTINCT FROM $3 FOR UPDATE) g`,
+			 FROM (SELECT id FROM blocks WHERE profile_id = $1 AND tab_id = $2 AND parent_id IS NOT DISTINCT FROM $3 AND deleted_at IS NULL FOR UPDATE) g`,
 			pid, in.TabID, parent, in.IDs).Scan(&ok); err != nil {
 			return err
 		}

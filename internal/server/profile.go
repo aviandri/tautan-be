@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -162,8 +163,8 @@ func (s *Server) handleEditor(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
-// loadPage returns the profile, its tabs and blocks. With visibleOnly, hidden
-// blocks (and children of hidden folders) are omitted.
+// loadPage returns the profile, its tabs and live (not deleted) blocks. With
+// visibleOnly, blocks a visitor shouldn't see are omitted (see publicBlocks).
 func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pageResponse, error) {
 	var out pageResponse
 	p, err := scanProfile(s.db.QueryRow(ctx, `SELECT `+profileCols+` FROM profiles WHERE id = $1`, pid))
@@ -174,15 +175,32 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 	if out.Tabs, err = s.listTabs(ctx, pid); err != nil {
 		return out, err
 	}
-	q := `SELECT ` + blockCols + ` FROM blocks b WHERE b.profile_id = $1`
-	if visibleOnly {
-		q += ` AND b.is_visible AND (b.parent_id IS NULL OR EXISTS (SELECT 1 FROM blocks f WHERE f.id = b.parent_id AND f.is_visible))`
-	}
-	q += ` ORDER BY b.position, b.created_at`
-	rows, err := s.db.Query(ctx, q, pid)
+	rows, err := s.db.Query(ctx, `SELECT `+blockCols+` FROM blocks b
+		WHERE b.profile_id = $1 AND b.deleted_at IS NULL ORDER BY b.position, b.created_at`, pid)
 	if err != nil {
 		return out, err
 	}
 	out.Blocks, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Block, error) { return scanBlock(r) })
+	if err == nil && visibleOnly {
+		out.Blocks = publicBlocks(out.Blocks, s.now())
+	}
 	return out, err
+}
+
+// publicBlocks drops hidden blocks, blocks outside their schedule window, and
+// children of folders that were dropped.
+func publicBlocks(blocks []Block, now time.Time) []Block {
+	shown := make(map[string]bool, len(blocks))
+	for _, b := range blocks {
+		if b.IsVisible && blockSchedule(b.Data).activeAt(now) {
+			shown[b.ID] = true
+		}
+	}
+	out := make([]Block, 0, len(blocks))
+	for _, b := range blocks {
+		if shown[b.ID] && (b.ParentID == nil || shown[*b.ParentID]) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
