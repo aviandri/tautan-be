@@ -6,30 +6,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
 type revalCall struct {
 	Usernames []string `json:"usernames"`
-	Tags      []string `json:"tags"`
 }
 
 func TestRevalidateWebhook(t *testing.T) {
 	s, _ := newTestServer(t)
 	calls := make(chan revalCall, 10)
-	var fail atomic.Int32
 	fe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		ts := r.Header.Get("X-Tautan-Timestamp")
 		if _, err := strconv.ParseInt(ts, 10, 64); err != nil ||
 			r.Header.Get("X-Tautan-Signature") != "sha256="+revalidateSignature("whsec", ts, body) {
 			t.Errorf("bad signature: %s %s", ts, r.Header.Get("X-Tautan-Signature"))
-		}
-		if fail.Add(-1) >= 0 {
-			w.WriteHeader(502)
-			return
 		}
 		var c revalCall
 		json.Unmarshal(body, &c)
@@ -49,7 +42,7 @@ func TestRevalidateWebhook(t *testing.T) {
 				t.Fatalf("usernames = %v, want %v", c.Usernames, want)
 			}
 			for i := range want {
-				if c.Usernames[i] != want[i] || c.Tags[i] != "profile:"+want[i] {
+				if c.Usernames[i] != want[i] {
 					t.Fatalf("call = %+v, want %v", c, want)
 				}
 			}
@@ -93,8 +86,25 @@ func TestRevalidateWebhook(t *testing.T) {
 	do(t, h, "DELETE", "/api/v1/blocks/"+f.link.ID, nil, tok).expect(204)
 	none()
 
-	// A 5xx from the frontend is retried.
-	do(t, h, "PATCH", "/api/v1/profile", map[string]any{"is_published": true}, tok).expect(200)
-	fail.Store(1)
-	expect("alice3")
+	// Large batches are split into calls of at most 20 names.
+	names := make([]string, 45)
+	for i := range names {
+		names[i] = "u" + strconv.Itoa(100+i)
+	}
+	s.revalidate(names...)
+	got := 0
+	for k := 0; k < 3; k++ {
+		select {
+		case c := <-calls:
+			if len(c.Usernames) > 20 {
+				t.Fatalf("batch of %d", len(c.Usernames))
+			}
+			got += len(c.Usernames)
+		case <-time.After(3 * time.Second):
+			t.Fatal("missing batch")
+		}
+	}
+	if got != 45 {
+		t.Errorf("sent %d names, want 45", got)
+	}
 }

@@ -41,7 +41,7 @@ func Load() Config {
 		TrustProxy:    env("TRUST_PROXY", "false") == "true",
 		AppBaseURL:    strings.TrimRight(env("APP_BASE_URL", "http://localhost:3000"), "/"),
 	}
-	c.RevalidateURL = env("REVALIDATE_URL", c.AppBaseURL+"/api/revalidate")
+	c.RevalidateURL = env("REVALIDATE_URL", env("FRONTEND_REVALIDATE_URL", c.AppBaseURL+"/api/revalidate"))
 	c.RevalidateSecret = env("REVALIDATE_SECRET", "")
 	return c
 }

@@ -24,13 +24,16 @@ import (
 //	POST $REVALIDATE_URL
 //	X-Tautan-Timestamp: <unix seconds>
 //	X-Tautan-Signature: sha256=<hex HMAC-SHA256(secret, "<timestamp>.<body>")>
-//	{"usernames":["alice","old-alice"],"tags":["profile:alice","profile:old-alice"]}
+//	{"usernames":["alice","old-alice"]}
 //
-// Changes are debounced so a burst of edits (drag reordering) sends one call.
+// This matches the frontend route (tautan-fe perf/public-page): 1-20 names per
+// call, fire-and-forget with a 2 s timeout and no retries, since the 60 s ISR
+// refresh is the safety net. Changes are debounced so a burst of edits (drag
+// reordering) sends one call.
 
 const (
 	revalidateDebounce = 750 * time.Millisecond
-	revalidateAttempts = 3
+	revalidateBatch    = 20
 )
 
 type revalidator struct {
@@ -43,7 +46,7 @@ type revalidator struct {
 
 func newRevalidator() *revalidator {
 	return &revalidator{pending: map[string]bool{}, debounce: revalidateDebounce,
-		client: &http.Client{Timeout: 5 * time.Second}}
+		client: &http.Client{Timeout: 2 * time.Second}}
 }
 
 // revalidate queues usernames for the next webhook call.
@@ -77,24 +80,13 @@ func (s *Server) flushRevalidate() {
 	if len(names) == 0 {
 		return
 	}
-	tags := make([]string, len(names))
-	for i, u := range names {
-		tags[i] = "profile:" + u
-	}
-	body, _ := json.Marshal(map[string]any{"usernames": names, "tags": tags})
-	for attempt := 1; attempt <= revalidateAttempts; attempt++ {
-		status, err := s.postRevalidate(body)
-		if err == nil && status < 500 {
-			if status >= 300 {
-				log.Printf("revalidate %v: frontend answered %d", names, status)
-			}
-			return
+	for len(names) > 0 {
+		n := min(len(names), revalidateBatch)
+		body, _ := json.Marshal(map[string]any{"usernames": names[:n]})
+		if status, err := s.postRevalidate(body); err != nil || status >= 300 {
+			log.Printf("revalidate %v: status %d, %v", names[:n], status, err)
 		}
-		if attempt == revalidateAttempts {
-			log.Printf("revalidate %v failed: status %d, %v", names, status, err)
-			return
-		}
-		time.Sleep(time.Duration(attempt) * time.Second)
+		names = names[n:]
 	}
 }
 
