@@ -42,6 +42,7 @@ func (s *Server) Routes() http.Handler {
 	}))
 
 	r.Get("/healthz", s.handleHealth)
+	r.Handle("/uploads/*", s.serveUploads())
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
 
@@ -58,6 +59,7 @@ func (s *Server) Routes() http.Handler {
 				r.Use(s.withProfile)
 				r.Patch("/profile", s.handlePatchProfile)
 				r.Get("/profile/editor", s.handleEditor)
+				r.Post("/uploads", s.handleUpload)
 
 				r.Post("/tabs", s.handleCreateTab)
 				r.Put("/tabs/order", s.handleOrderTabs)
