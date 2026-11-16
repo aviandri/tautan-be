@@ -280,6 +280,9 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 	out.Blocks, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (Block, error) { return scanBlock(r) })
 	if err == nil && visibleOnly {
 		out.Blocks = publicBlocks(out.Blocks, s.now())
+		for i := range out.Blocks {
+			publicBlockData(&out.Blocks[i], s.now())
+		}
 		out.Profile.Announcement = publicAnnouncement(out.Profile.Announcement, s.now())
 	}
 	if err != nil {

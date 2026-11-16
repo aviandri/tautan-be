@@ -121,6 +121,9 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
+		if err := checkBlockRefs(ctx, tx, pid, in.Type, data); err != nil {
+			return err
+		}
 		var err error
 		b, err = scanBlock(tx.QueryRow(ctx,
 			`INSERT INTO blocks AS b (profile_id, tab_id, parent_id, type, data, position)
@@ -154,6 +157,9 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 		if raw, ok := in["data"]; ok {
 			if next.Data, err = validateBlockData(cur.Type, raw); err != nil {
 				return dataErr(err)
+			}
+			if err := checkBlockRefs(ctx, tx, pid, cur.Type, next.Data); err != nil {
+				return err
 			}
 		}
 		if raw, ok := in["is_visible"]; ok {

@@ -112,7 +112,7 @@ func TestSellBlockValidation(t *testing.T) {
 	if !strings.Contains(string(b.Data), `"target":"+6281234567890"`) {
 		t.Errorf("payment confirm not normalised: %s", b.Data)
 	}
-	ok("payment", `{"accounts":[{"bank":"GoPay","name":"Budi","number":"081234567890"}],"confirm":{"kind":"form","target":"`+tab.ID+`"}}`)
+	bad("payment", `{"accounts":[{"bank":"GoPay","name":"Budi","number":"081234567890"}],"confirm":{"kind":"form","target":"`+tab.ID+`"}}`, "form block on this page")
 	bad("payment", `{}`, "qris_image_url or at least one account")
 	bad("payment", `{"qris_image_url":"javascript:x"}`, "http(s)")
 	bad("payment", `{"qris_image_url":"/uploads/q.png","confirm":{"kind":"email","target":"x"}}`, "confirm.kind")

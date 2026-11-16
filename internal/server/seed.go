@@ -154,6 +154,21 @@ func (s *Server) SeedHeavy(ctx context.Context, full bool) (string, error) {
 			blk{"file", map[string]any{"title": "Size guide", "url": "https://example.com/size-guide.pdf"}},
 			blk{"booking", map[string]any{"url": "https://calendly.com/perfdemo/30min"}},
 			blk{"quote", map[string]any{"quote": "Make it simple, but significant.", "name": "Don Draper"}},
+			// P3-B
+			blk{"media_kit", map[string]any{"updated_at": "2026-11-01", "platforms": []map[string]any{
+				{"platform": "tiktok", "handle": "@perfdemo", "followers": 120000, "avg_views": 40000, "engagement": 7.5},
+				{"platform": "instagram", "handle": "@perfdemo", "followers": 56000}},
+				"audience": map[string]any{"age": []map[string]any{{"label": "18-24", "pct": 58}, {"label": "25-34", "pct": 31}},
+					"gender": []map[string]any{{"label": "Female", "pct": 72}}, "cities": []map[string]any{{"label": "Jakarta", "pct": 24}}}}},
+			blk{"rate_card", map[string]any{"packages": []map[string]any{
+				{"name": "TikTok video", "price_from": 250000000, "deliverables": []string{"60s video", "2 revisions"}, "turnaround": "7 days"}}}},
+			blk{"brands", map[string]any{"title": "Worked with", "logos": []map[string]any{{"image_url": p1, "name": "Acme"}, {"image_url": p2, "name": "Globex"}}}},
+			blk{"shop_the_look", map[string]any{"image_url": hero, "spots": []map[string]any{
+				{"x": 30, "y": 40, "title": "Classic Tee", "price": 15000000, "url": "https://example.com/tee"}}}},
+			blk{"gallery", map[string]any{"layout": "carousel", "images": []map[string]any{{"url": p1, "alt": "One"}, {"url": p2, "alt": "Two"}, {"url": p3, "alt": "Three"}}}},
+			blk{"community", map[string]any{"platform": "whatsapp_group", "url": "https://chat.whatsapp.com/PerfDemo", "title": "Customers group", "members_note": "1.2k members"}},
+			blk{"events", map[string]any{"mode": "weekly", "tz": "Asia/Jakarta", "weekly": []map[string]any{
+				{"days": []string{"fri"}, "start": "20:00", "duration_min": 120, "platform": "tiktok", "title": "Live sale"}}}},
 		)
 	}
 	for _, b := range blocks {
