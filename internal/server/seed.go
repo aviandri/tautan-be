@@ -169,6 +169,11 @@ func (s *Server) SeedHeavy(ctx context.Context, full bool) (string, error) {
 			blk{"community", map[string]any{"platform": "whatsapp_group", "url": "https://chat.whatsapp.com/PerfDemo", "title": "Customers group", "members_note": "1.2k members"}},
 			blk{"events", map[string]any{"mode": "weekly", "tz": "Asia/Jakarta", "weekly": []map[string]any{
 				{"days": []string{"fri"}, "start": "20:00", "duration_min": 120, "platform": "tiktok", "title": "Live sale"}}}},
+			// Fetched by the server's remote refresher (shown as pending until then).
+			blk{"post_grid", map[string]any{"posts": []map[string]any{
+				{"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"}, {"url": "https://www.youtube.com/shorts/tPEE9ZwTmy0"}}}},
+			blk{"latest_video", map[string]any{"channel_id": "UC_x5XG1OV2P6uZZ5FSM9Ttw", "show": map[string]any{"count": 1}}},
+			blk{"podcast", map[string]any{"feed_url": "https://feeds.npr.org/510289/podcast.xml", "count": 3}},
 		)
 	}
 	for _, b := range blocks {

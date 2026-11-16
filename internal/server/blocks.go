@@ -135,6 +135,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	s.queueMissingRemote(ctx, b.Type, b.Data)
 	writeJSON(w, http.StatusCreated, b)
 }
 
@@ -221,6 +222,7 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	s.queueMissingRemote(ctx, out.Type, out.Data)
 	writeJSON(w, http.StatusOK, out)
 }
 

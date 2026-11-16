@@ -31,6 +31,7 @@ func Run(cfg config.Config) error {
 	defer pool.Close()
 
 	api := New(cfg, pool)
+	go api.RunRemoteRefresher(ctx)
 	go func() {
 		if err := api.ResumeImages(ctx); err != nil {
 			log.Printf("resume image variants: %v", err)
