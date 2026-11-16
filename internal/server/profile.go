@@ -263,6 +263,18 @@ func (s *Server) handleEditor(w http.ResponseWriter, r *http.Request) {
 // loadPage returns the profile, its tabs and live (not deleted) blocks. With
 // visibleOnly, blocks a visitor shouldn't see are omitted (see publicBlocks).
 func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pageResponse, error) {
+	if visibleOnly {
+		return s.loadPageOpen(ctx, pid, nil)
+	}
+	return s.loadPageWith(ctx, pid, false, nil)
+}
+
+// loadPageOpen is the public read with the gated cards in open unlocked.
+func (s *Server) loadPageOpen(ctx context.Context, pid string, open map[string]bool) (pageResponse, error) {
+	return s.loadPageWith(ctx, pid, true, open)
+}
+
+func (s *Server) loadPageWith(ctx context.Context, pid string, visibleOnly bool, open map[string]bool) (pageResponse, error) {
 	var out pageResponse
 	p, err := scanProfile(s.db.QueryRow(ctx, `SELECT `+profileCols+` FROM profiles WHERE id = $1`, pid))
 	if err != nil {
@@ -293,6 +305,9 @@ func (s *Server) loadPage(ctx context.Context, pid string, visibleOnly bool) (pa
 	}
 	if err = s.attachEngage(ctx, out.Blocks, visibleOnly); err != nil {
 		return out, err
+	}
+	if visibleOnly {
+		lockBlocks(out.Blocks, open) // after every attach, before media: nothing gated leaks
 	}
 	out.Media, err = s.pageMedia(ctx, out)
 	return out, err

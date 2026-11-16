@@ -1,0 +1,1 @@
+ALTER TABLE blocks DROP COLUMN IF EXISTS gate;

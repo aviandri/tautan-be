@@ -22,6 +22,7 @@ type Server struct {
 	unfurlLimiter  *rateLimiter
 	engageLimiter  *rateLimiter
 	askLimiter     *rateLimiter
+	unlockLimiter  *rateLimiter
 	fetcher        *safeFetcher
 	images         imageWorker
 	reval          *revalidator
@@ -46,6 +47,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		unfurlLimiter:  newRateLimiter(30, time.Minute),
 		engageLimiter:  newRateLimiter(30, 10*time.Minute),
 		askLimiter:     newRateLimiter(5, 10*time.Minute),
+		unlockLimiter:  newRateLimiter(10, 10*time.Minute),
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
 	}
@@ -86,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/public/{username}/form", s.handlePublicForm)
 		r.Post("/public/{username}/subscribe", s.handlePublicSubscribe)
 		r.Get("/public/{username}/vcard", s.handleVCard)
+		r.Post("/public/{username}/blocks/{id}/unlock", s.handleUnlock)
 		r.Post("/public/{username}/blocks/{id}/vote", s.handlePollVote)
 		r.Post("/public/{username}/blocks/{id}/ask", s.handleAsk)
 		r.Post("/public/{username}/blocks/{id}/lead", s.handleLead)

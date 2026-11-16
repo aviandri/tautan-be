@@ -50,6 +50,9 @@ type Block struct {
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 	DeletedAt *time.Time      `json:"deleted_at,omitempty"`
+	Gate      *GateView       `json:"gate,omitempty"`   // card-level gate (see gates.go)
+	Locked    bool            `json:"locked,omitempty"` // public reads: data withheld until unlocked
+	gateRaw   []byte
 }
 
 // DefaultTheme is applied to new profiles; it must satisfy the full Theme shape.

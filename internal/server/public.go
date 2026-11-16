@@ -282,6 +282,9 @@ func (s *Server) handlePublicContact(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	if cb, err := scanBlock(s.db.QueryRow(ctx, `SELECT `+blockCols+` FROM blocks b WHERE b.id = $1`, in.BlockID)); err == nil && !s.gateOK(w, r, cb) {
+		return
+	}
 	var id string
 	var created time.Time
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {

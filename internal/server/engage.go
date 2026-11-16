@@ -187,8 +187,7 @@ func (s *Server) publicCard(w http.ResponseWriter, r *http.Request, typ string) 
 		s.internalError(w, err)
 		return "", b, false
 	}
-	if gated(b) && !s.unlocked(r, b) {
-		writeError(w, http.StatusForbidden, "locked", "unlock this card first")
+	if !s.gateOK(w, r, b) {
 		return "", b, false
 	}
 	return pid, b, true

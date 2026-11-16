@@ -266,6 +266,9 @@ func (s *Server) handlePublicForm(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	if !s.gateOK(w, r, b) {
+		return
+	}
 	var form FormData
 	_ = json.Unmarshal(b.Data, &form)
 	answers, fieldErrs := validateAnswers(form.Fields, in.Answers)
@@ -340,6 +343,9 @@ func (s *Server) handlePublicSubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.internalError(w, err)
+		return
+	}
+	if !s.gateOK(w, r, b) {
 		return
 	}
 	if !s.formLimiter.Allow(clientIP(r)) {

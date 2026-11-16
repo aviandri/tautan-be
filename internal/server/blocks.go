@@ -13,11 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-const blockCols = `b.id, b.profile_id, b.tab_id, b.parent_id, b.type, b.position, b.is_visible, b.data, b.created_at, b.updated_at, b.deleted_at`
+const blockCols = `b.id, b.profile_id, b.tab_id, b.parent_id, b.type, b.position, b.is_visible, b.data, b.created_at, b.updated_at, b.deleted_at, b.gate`
 
 func scanBlock(r rowScanner) (Block, error) {
 	var b Block
-	err := r.Scan(&b.ID, &b.ProfileID, &b.TabID, &b.ParentID, &b.Type, &b.Position, &b.IsVisible, &b.Data, &b.CreatedAt, &b.UpdatedAt, &b.DeletedAt)
+	err := r.Scan(&b.ID, &b.ProfileID, &b.TabID, &b.ParentID, &b.Type, &b.Position, &b.IsVisible, &b.Data, &b.CreatedAt, &b.UpdatedAt, &b.DeletedAt, &b.gateRaw)
+	b.setGateView(false)
 	return b, err
 }
 
@@ -93,6 +94,7 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		Type     string          `json:"type"`
 		Data     json.RawMessage `json:"data"`
 		ParentID *string         `json:"parent_id"`
+		Gate     json.RawMessage `json:"gate"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -102,6 +104,11 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := validateBlockData(in.Type, in.Data)
+	if err != nil {
+		s.writeErr(w, dataErr(err))
+		return
+	}
+	gate, err := parseGate(in.Gate, nil)
 	if err != nil {
 		s.writeErr(w, dataErr(err))
 		return
@@ -126,9 +133,9 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 		}
 		var err error
 		b, err = scanBlock(tx.QueryRow(ctx,
-			`INSERT INTO blocks AS b (profile_id, tab_id, parent_id, type, data, position)
-			 VALUES ($1, $2, $3, $4, $5, `+nextPositionSQL+`) RETURNING `+blockCols,
-			pid, in.TabID, in.ParentID, in.Type, data))
+			`INSERT INTO blocks AS b (profile_id, tab_id, parent_id, type, data, gate, position)
+			 VALUES ($1, $2, $3, $4, $5, $6, `+nextPositionSQL+`) RETURNING `+blockCols,
+			pid, in.TabID, in.ParentID, in.Type, data, gate))
 		return err
 	})
 	if err != nil {
@@ -161,6 +168,11 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := checkBlockRefs(ctx, tx, pid, cur.Type, next.Data); err != nil {
 				return err
+			}
+		}
+		if raw, ok := in["gate"]; ok {
+			if next.gateRaw, err = parseGate(raw, cur.gate()); err != nil {
+				return dataErr(err)
 			}
 		}
 		if raw, ok := in["is_visible"]; ok {
@@ -207,9 +219,9 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		out, err = scanBlock(tx.QueryRow(ctx,
-			`UPDATE blocks b SET data = $3, is_visible = $4, tab_id = $5, parent_id = $6, position = $7, updated_at = now()
+			`UPDATE blocks b SET data = $3, is_visible = $4, tab_id = $5, parent_id = $6, position = $7, gate = $8, updated_at = now()
 			 WHERE b.id = $1 AND b.profile_id = $2 RETURNING `+blockCols,
-			id, pid, next.Data, next.IsVisible, next.TabID, next.ParentID, pos))
+			id, pid, next.Data, next.IsVisible, next.TabID, next.ParentID, pos, next.gateRaw))
 		if err != nil {
 			return err
 		}
