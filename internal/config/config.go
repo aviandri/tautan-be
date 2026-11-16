@@ -20,10 +20,14 @@ type Config struct {
 	CountryHeader string        // request header carrying the visitor country code
 	TrustProxy    bool          // honour X-Forwarded-For / X-Real-IP (only behind a proxy you control)
 	AppBaseURL    string        // public FE origin, used for page URLs (vCard)
+	// Revalidate webhook (perf 2c): POSTed to RevalidateURL, signed with
+	// RevalidateSecret. Disabled while the secret is empty.
+	RevalidateURL    string
+	RevalidateSecret string
 }
 
 func Load() Config {
-	return Config{
+	c := Config{
 		Addr:          env("ADDR", ":8080"),
 		DatabaseURL:   env("DATABASE_URL", ""),
 		JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),
@@ -37,6 +41,9 @@ func Load() Config {
 		TrustProxy:    env("TRUST_PROXY", "false") == "true",
 		AppBaseURL:    strings.TrimRight(env("APP_BASE_URL", "http://localhost:3000"), "/"),
 	}
+	c.RevalidateURL = env("REVALIDATE_URL", c.AppBaseURL+"/api/revalidate")
+	c.RevalidateSecret = env("REVALIDATE_SECRET", "")
+	return c
 }
 
 func env(k, def string) string {

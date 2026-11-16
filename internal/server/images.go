@@ -283,8 +283,13 @@ func (s *Server) processImage(ctx context.Context, name string) error {
 			}
 		}
 	}
-	_, err = s.db.Exec(ctx, `UPDATE images SET ready = true WHERE name = $1`, name)
-	return err
+	if _, err = s.db.Exec(ctx, `UPDATE images SET ready = true WHERE name = $1`, name); err != nil {
+		return err
+	}
+	if len(planned) > 0 {
+		s.revalidateImagePages(ctx, name)
+	}
+	return nil
 }
 
 func variantName(base string, w int, ext string) string {

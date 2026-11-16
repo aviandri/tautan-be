@@ -22,6 +22,7 @@ type Server struct {
 	unfurlLimiter  *rateLimiter
 	fetcher        *safeFetcher
 	images         imageWorker
+	reval          *revalidator
 	// InlineImages encodes image variants during the upload request (tests, seeding).
 	InlineImages bool
 	// Quiet disables per-request access logs (used by tests).
@@ -39,6 +40,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		formLimiter:    newRateLimiter(10, 10*time.Minute),
 		unfurlLimiter:  newRateLimiter(30, time.Minute),
 		fetcher:        newSafeFetcher(false),
+		reval:          newRevalidator(),
 	}
 }
 
@@ -83,10 +85,10 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.handleMe)
 			r.Group(func(r chi.Router) {
 				r.Use(s.withProfile)
-				r.Patch("/profile", s.handlePatchProfile)
+				r.With(s.revalidatesPage).Patch("/profile", s.handlePatchProfile)
 				r.Get("/profile/editor", s.handleEditor)
 				r.Post("/unfurl", s.handleUnfurl)
-				r.Post("/import", s.handleImport)
+				r.With(s.revalidatesPage).Post("/import", s.handleImport)
 				r.Post("/uploads", s.handleUpload)
 				r.Get("/contact-submissions", s.handleListContacts)
 				r.Get("/contact-submissions.csv", s.handleContactSubmissionsCSV)
@@ -103,17 +105,17 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/analytics/blocks/{id}/series", s.handleAnalyticsBlockSeries)
 				r.Get("/analytics/export.csv", s.handleAnalyticsExport)
 
-				r.Post("/tabs", s.handleCreateTab)
-				r.Put("/tabs/order", s.handleOrderTabs)
-				r.Patch("/tabs/{id}", s.handlePatchTab)
-				r.Delete("/tabs/{id}", s.handleDeleteTab)
+				r.With(s.revalidatesPage).Post("/tabs", s.handleCreateTab)
+				r.With(s.revalidatesPage).Put("/tabs/order", s.handleOrderTabs)
+				r.With(s.revalidatesPage).Patch("/tabs/{id}", s.handlePatchTab)
+				r.With(s.revalidatesPage).Delete("/tabs/{id}", s.handleDeleteTab)
 
-				r.Post("/blocks", s.handleCreateBlock)
-				r.Put("/blocks/order", s.handleOrderBlocks)
+				r.With(s.revalidatesPage).Post("/blocks", s.handleCreateBlock)
+				r.With(s.revalidatesPage).Put("/blocks/order", s.handleOrderBlocks)
 				r.Get("/blocks/deleted", s.handleListDeleted)
-				r.Post("/blocks/{id}/restore", s.handleRestoreBlock)
-				r.Patch("/blocks/{id}", s.handlePatchBlock)
-				r.Delete("/blocks/{id}", s.handleDeleteBlock)
+				r.With(s.revalidatesPage).Post("/blocks/{id}/restore", s.handleRestoreBlock)
+				r.With(s.revalidatesPage).Patch("/blocks/{id}", s.handlePatchBlock)
+				r.With(s.revalidatesPage).Delete("/blocks/{id}", s.handleDeleteBlock)
 			})
 		})
 	})
