@@ -28,6 +28,7 @@ Health check: `curl localhost:8080/api/v1/health` → `{"status":"ok"}`
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | used to build upload URLs |
 | `COOKIE_SECURE` | `false` | set `true` behind HTTPS |
 | `COUNTRY_HEADER` | `CF-IPCountry` | header holding the visitor's country code |
+| `TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP (rate limits); enable only behind your own proxy |
 
 ## Layout
 
