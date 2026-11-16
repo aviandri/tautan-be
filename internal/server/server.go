@@ -19,6 +19,8 @@ type Server struct {
 	contactLimiter *rateLimiter
 	formLimiter    *rateLimiter
 	salts          saltCache
+	unfurlLimiter  *rateLimiter
+	fetcher        *safeFetcher
 	// Quiet disables per-request access logs (used by tests).
 	Quiet bool
 	cfg   config.Config
@@ -32,6 +34,8 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		eventLimiter:   newRateLimiter(120, time.Minute),
 		contactLimiter: newRateLimiter(5, 10*time.Minute),
 		formLimiter:    newRateLimiter(10, 10*time.Minute),
+		unfurlLimiter:  newRateLimiter(30, time.Minute),
+		fetcher:        newSafeFetcher(false),
 	}
 }
 
@@ -77,6 +81,7 @@ func (s *Server) Routes() http.Handler {
 				r.Use(s.withProfile)
 				r.Patch("/profile", s.handlePatchProfile)
 				r.Get("/profile/editor", s.handleEditor)
+				r.Post("/unfurl", s.handleUnfurl)
 				r.Post("/uploads", s.handleUpload)
 				r.Get("/contact-submissions", s.handleListContacts)
 				r.Get("/contact-submissions.csv", s.handleContactSubmissionsCSV)
