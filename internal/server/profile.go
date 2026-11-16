@@ -92,11 +92,25 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 			}
 			add("avatar_url", val)
 		case "theme":
-			if !isJSONObject(raw) {
-				bad("invalid_theme", "theme must be an object")
+			if err := validateTheme(raw); err != nil {
+				bad("invalid_theme", err.Error())
 				return
 			}
 			add("theme", raw)
+		case "socials":
+			norm, err := normalizeSocials(raw)
+			if err != nil {
+				bad("invalid_socials", err.Error())
+				return
+			}
+			add("socials", norm)
+		case "socials_position":
+			var v string
+			if json.Unmarshal(raw, &v) != nil || (v != "top" && v != "bottom") {
+				bad("invalid_socials_position", "socials_position must be top or bottom")
+				return
+			}
+			add("socials_position", v)
 		case "seo":
 			var seo struct {
 				Title       *string `json:"title,omitempty"`
