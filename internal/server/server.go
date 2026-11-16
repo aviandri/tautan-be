@@ -15,9 +15,11 @@ import (
 )
 
 type Server struct {
-	cfg config.Config
-	db  *pgxpool.Pool
-	now func() time.Time
+	// Quiet disables per-request access logs (used by tests).
+	Quiet bool
+	cfg   config.Config
+	db    *pgxpool.Pool
+	now   func() time.Time
 }
 
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
@@ -26,7 +28,11 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.RealIP, middleware.Logger, middleware.Recoverer)
+	r.Use(middleware.RequestID, middleware.RealIP)
+	if !s.Quiet {
+		r.Use(middleware.Logger)
+	}
+	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   s.cfg.CORSOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -38,6 +44,17 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/healthz", s.handleHealth)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
+
+		r.Post("/auth/signup", s.handleSignup)
+		r.Post("/auth/login", s.handleLogin)
+		r.Post("/auth/refresh", s.handleRefresh)
+		r.Post("/auth/logout", s.handleLogout)
+		r.Get("/auth/username-available", s.handleUsernameAvailable)
+
+		r.Group(func(r chi.Router) {
+			r.Use(s.requireAuth)
+			r.Get("/me", s.handleMe)
+		})
 	})
 	return r
 }

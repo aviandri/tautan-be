@@ -38,6 +38,7 @@ func newTestServer(t *testing.T) (*Server, http.Handler) {
 	t.Helper()
 	testutil.Truncate(t, testPool)
 	s := New(testConfig(), testPool)
+	s.Quiet = true
 	return s, s.Routes()
 }
 
