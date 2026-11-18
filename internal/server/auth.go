@@ -43,6 +43,11 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	// Each signup emails a confirmation link to the given address.
+	if !s.signupLimiter.Allow(clientIP(r)) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-ups from this network; try again later")
+		return
+	}
 	email := strings.ToLower(strings.TrimSpace(in.Email))
 	if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
 		writeError(w, http.StatusBadRequest, "invalid_email", "email address is invalid")
@@ -109,6 +114,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &in) {
 		return
 	}
+	// Brute force and credential stuffing: every attempt counts per IP, and
+	// failed attempts count per account (successes don't, so a victim who
+	// knows their password isn't locked out by an attacker's guesses as fast).
+	account := strings.ToLower(strings.TrimSpace(in.Email))
+	if !s.loginIPLimiter.Allow(clientIP(r)) || s.loginFailLimiter.Exceeded(account) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many sign-in attempts; wait a few minutes or reset your password")
+		return
+	}
 	ctx := r.Context()
 	var u User
 	var hash *string
@@ -124,6 +137,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(*hash), []byte(in.Password)) != nil {
+		s.loginFailLimiter.Allow(account)
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is incorrect")
 		return
 	}
