@@ -143,6 +143,9 @@ func TestNewValidates(t *testing.T) {
 	if _, err := New(Config{Driver: "smtp", Host: "h", Port: 587, From: "not an address"}); err == nil {
 		t.Error("bad from accepted")
 	}
+	if _, err := New(Config{Driver: "smtp", Host: "h", Port: 587, From: "Tautan <no-reply@localhost>"}); err == nil {
+		t.Error("default localhost sender accepted for smtp")
+	}
 	if s, err := New(Config{}); err != nil || s == nil {
 		t.Error("log driver should be the default")
 	}

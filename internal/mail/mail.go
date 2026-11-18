@@ -59,8 +59,12 @@ func New(cfg Config) (Sender, error) {
 		if cfg.Host == "" || cfg.Port == 0 {
 			return nil, errors.New("MAIL_DRIVER=smtp needs SMTP_HOST and SMTP_PORT")
 		}
-		if _, err := mail.ParseAddress(cfg.From); err != nil {
+		from, err := mail.ParseAddress(cfg.From)
+		if err != nil {
 			return nil, fmt.Errorf("MAIL_FROM is not a valid address (%q): %w", cfg.From, err)
+		}
+		if strings.HasSuffix(strings.ToLower(from.Address), "@localhost") {
+			return nil, errors.New("MAIL_DRIVER=smtp needs MAIL_FROM set to a real sender, e.g. \"Tautan <hello@mail.tautan.id>\"")
 		}
 		return &SMTP{cfg: cfg}, nil
 	default:
