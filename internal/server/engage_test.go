@@ -180,6 +180,13 @@ func TestLeadMagnet(t *testing.T) {
 	s.now = func() time.Time { return time.Now().Add(16 * time.Minute) }
 	do(t, h, "GET", out.DownloadURL, nil).expect(410)
 	s.now = time.Now
+	// A private p_ deliverable is never served through a lead magnet (audit L1).
+	os.WriteFile(filepath.Join(s.cfg.UploadDir, "p_0123456789abcdef0123456789abcdef.pdf"), []byte("%PDF-paid"), 0o644)
+	do(t, h, "PATCH", "/api/v1/blocks/"+card.ID, map[string]any{"data": map[string]any{"title": "Guide", "file_url": "/uploads/p_0123456789abcdef0123456789abcdef.pdf"}}, bearer(f.tok)).expect(200)
+	do(t, h, "POST", "/api/v1/public/magnet/blocks/"+card.ID+"/lead", map[string]any{"email": "p@example.com"}).expect(200).json(&out)
+	if r := do(t, h, "GET", out.DownloadURL, nil); r.Code != 404 || strings.Contains(r.Body.String(), "PDF-paid") {
+		t.Errorf("private file via lead magnet = %d", r.Code)
+	}
 	// External file: redirect after unlock.
 	do(t, h, "PATCH", "/api/v1/blocks/"+card.ID, map[string]any{"data": map[string]any{"title": "Guide", "file_url": "https://files.example/guide.pdf"}}, bearer(f.tok)).expect(200)
 	do(t, h, "POST", "/api/v1/public/magnet/blocks/"+card.ID+"/lead", map[string]any{"email": "b@example.com"}).expect(200).json(&out)
