@@ -16,9 +16,9 @@
 | M1 | Medium | Rate limits | Limiter map can grow without bound; past 10k keys, every hit scans it under one lock | Open |
 | M2 | Medium | Auth / CSRF | JSON endpoints accept `text/plain`, so a cross-site form can log a victim into the attacker's account (login CSRF) | Open |
 | M3 | Medium | Auth | Refresh rotation has no reuse detection | Open |
-| L1 | Low | Uploads | Lead-magnet download serves any stored file, including another seller's private `p_` deliverable | Fixed in this audit's hardening PR |
-| L2 | Low | Headers | No `frame-ancestors` / `X-Frame-Options` on the dashboard | Fixed in the FE headers PR |
-| L3 | Low | Headers | No CSP anywhere; no Permissions-Policy; Caddy-only headers are missing on Vercel | Partly fixed (FE headers PR); CSP open |
+| L1 | Low | Uploads | Lead-magnet download serves any stored file, including another seller's private `p_` deliverable | Fixed in be#54 |
+| L2 | Low | Headers | No `frame-ancestors` / `X-Frame-Options` on the dashboard | Fixed in fe#90 |
+| L3 | Low | Headers | No CSP anywhere; no Permissions-Policy; Caddy-only headers are missing on Vercel | Partly fixed (fe#90); CSP open |
 | L4 | Low | SSRF | `publicIP` passes `::/96` (IPv4-compatible), `::ffff:0:0:0/96`, `fec0::/10` and `192.88.99.0/24` | Open |
 | L5 | Low | Uploads | Served uploads have no `CSP: sandbox` or CORP | Open |
 | L6 | Low | Uploads | No cap on declared image dimensions | Open |
@@ -77,7 +77,7 @@
 
 ## Low
 
-### L1: Lead-magnet download can serve private `p_` files (fixed in the hardening PR)
+### L1: Lead-magnet download can serve private `p_` files (fixed in be#54)
 - **Where:**
   - `internal/server/engage.go:449-462`: `handleLeadDownload` opens `path.Base(file_url)` from the upload store with no name check.
   - `checkLeadMagnet` (`engage.go:123`) accepts any `/uploads/…` URL.
@@ -86,7 +86,7 @@
 - **Why only Low:** A must already know B's 128-bit random name. No leak path was found: public reads strip it, buyers see only the file name, and download links are signed.
 - **Fix:** serve only names matching `storedNameRE` from `handleLeadDownload`.
 
-### L2: Clickjacking of the dashboard (fixed in the FE headers PR)
+### L2: Clickjacking of the dashboard (fixed in fe#90)
 - **Where:**
   - `tautan-fe/next.config.ts:42` (`headers()`) and `deploy/Caddyfile:23-30`.
   - There's no `frame-ancestors` or `X-Frame-Options` anywhere.
@@ -97,9 +97,9 @@
 - **Where:** same as L2.
 - **Notes:**
   - The sanitisers hold today (see "Verified" below), but nothing backs them up.
-  - The HSTS, nosniff and Referrer-Policy headers exist only in the Caddyfile, so a Vercel deploy of the FE gets none of them.
+  - The HSTS, nosniff and Referrer-Policy headers exist only in the Caddyfile, so a Vercel deploy of the FE gets none of them (browsers default Referrer-Policy to strict-origin-when-cross-origin anyway; HSTS on Vercel comes from the platform).
 - **Fix:**
-  - nosniff, Referrer-Policy and Permissions-Policy are now also sent from `next.config.ts` (FE headers PR).
+  - nosniff and Permissions-Policy are now also sent from `next.config.ts` (fe#90).
   - A CSP is still open. Start in Report-Only:
     - `default-src 'self'; script-src 'self' 'unsafe-inline' https://www.googletagmanager.com https://connect.facebook.net; frame-src` with the embed allow-list from `src/lib/embeds.ts`; `object-src 'none'; base-uri 'none'; form-action 'self' <API origin>`.
     - `'unsafe-inline'` stays for Next's bootstrap and the Announcement inline script.
