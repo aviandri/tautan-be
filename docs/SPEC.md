@@ -526,9 +526,11 @@ Public endpoints. Each returns 404 when the card isn't live on the page, and 403
   - Results follow `show_results`: always included for `always`, included once `voted` is set unless `never`.
   - The page is ISR-cached, so the FE (tautan-fe #75) records "voted today" (UTC) per poll in `localStorage['tautan:poll:<block id>']`. It calls this endpoint on load only for those polls, then shows results / "You voted today" instead of the Vote button. A `null` answer clears the record.
 - `POST /public/{u}/blocks/{id}/ask` `{question 1–500, visitor_id?}` → `204`. `429` after 5 per 10 min per IP + `visitor_id` per page, plus 60 per 10 min per IP per page.
-- `POST /public/{u}/blocks/{id}/lead` `{email, name?, subscribe?}` → `200 {download_url, expires_at}`.
+- `POST /public/{u}/blocks/{id}/lead` `{email, name?, subscribe?}` → `200 {download_url, expires_at, emailed}`.
   - The contact is upserted into Audience.
   - `download_url` is `/api/v1/public/{u}/download/<signed token>` and is valid for 15 min. It serves `/uploads/` files as an attachment (`Cache-Control: private, no-store`) and 302-redirects to external files. Responses: `403 invalid_token`, `410 expired`.
+  - **Emailed copy (P1 email item 2):** the same kind of link, valid for **7 days**, is also emailed to the visitor through the outbox, subject "Your download: <title>". This only happens when `MAIL_DRIVER=smtp` and the page owner's email is confirmed (an unconfirmed throwaway account can't use the form to send mail). `emailed` reports whether it was queued; the on-page link is always returned, so it stays the fallback.
+  - Anti-abuse: at most 3 lead emails per recipient address per 24 h across all pages, and 100 per card per hour, on top of the 10 per 10 min per-IP form limit. Past a cap the request still succeeds with `emailed: false`. The email uses only text that's already public (card title, page name and URL) and has no Reply-To.
 - `POST /public/{u}/blocks/{id}/enter` `{email, name?, subscribe?}` → `200 {entered: true, already_entered}`. Entries are deduped by email per giveaway, and the contact goes into Audience. `409 giveaway_ended`.
 
 Owner endpoints:
