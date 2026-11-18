@@ -109,15 +109,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	var u User
-	var hash string
-	// Accounts created through Google have no password; '' never matches.
-	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, COALESCE(password_hash, '') FROM users WHERE email = $1`,
+	var hash *string
+	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash FROM users WHERE email = $1`,
 		strings.TrimSpace(in.Email)).Scan(&u.ID, &u.Email, &u.CreatedAt, &hash)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.internalError(w, err)
 		return
 	}
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password)) != nil {
+	if err == nil && hash == nil {
+		// Google-only account (signup already reveals which emails exist).
+		writeError(w, http.StatusUnauthorized, "password_not_set", "this account signs in with Google; set a password in Settings to use one")
+		return
+	}
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(*hash), []byte(in.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "invalid_credentials", "email or password is incorrect")
 		return
 	}
@@ -243,10 +247,19 @@ func displayNameFor(username string) string {
 	return username
 }
 
+// meUser adds sign-in methods to User; only GET /me returns them.
+type meUser struct {
+	User
+	HasPassword bool     `json:"has_password"`
+	Identities  []string `json:"identities"` // linked providers, e.g. ["google"]
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var u User
-	err := s.db.QueryRow(ctx, `SELECT id, email, created_at FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt)
+	var u meUser
+	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash IS NOT NULL,
+		ARRAY(SELECT DISTINCT provider FROM user_identities WHERE user_id = users.id ORDER BY provider)
+		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "user no longer exists")
 		return
@@ -261,6 +274,37 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"user": u, "profile": p})
+}
+
+// PATCH /me/password {new_password}: lets a Google-only account add a
+// password. Changing an existing password is a separate (future) flow that
+// asks for the current one.
+func (s *Server) handleSetPassword(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		NewPassword string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &in) {
+		return
+	}
+	if len(in.NewPassword) < 8 || len(in.NewPassword) > 72 {
+		writeError(w, http.StatusBadRequest, "invalid_password", "password must be 8 to 72 characters")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	tag, err := s.db.Exec(r.Context(), `UPDATE users SET password_hash = $2 WHERE id = $1 AND password_hash IS NULL`, userID(r), string(hash))
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "password_already_set", "this account already has a password")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) profileForUser(ctx context.Context, uid string) (Profile, error) {

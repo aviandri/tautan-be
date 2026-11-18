@@ -103,7 +103,7 @@ func TestRefreshRotationAndLogout(t *testing.T) {
 		AccessToken string `json:"access_token"`
 	}
 	r2.json(&out)
-	if _, err := s.parseAccessToken(out.AccessToken); err != nil {
+	if _, _, err := s.parseAccessToken(out.AccessToken); err != nil {
 		t.Fatalf("refreshed token invalid: %v", err)
 	}
 	c2 := refreshCookieFrom(t, r2)

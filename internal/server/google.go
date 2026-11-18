@@ -40,6 +40,9 @@ type oauthStateClaims struct {
 	State    string `json:"st"`
 	Nonce    string `json:"nn"`
 	Verifier string `json:"cv"`
+	// Username typed on the landing page (signup?u=): becomes the new
+	// account's onboarding suggestion.
+	Username string `json:"u,omitempty"`
 }
 
 func randomToken() string {
@@ -92,6 +95,9 @@ func (s *Server) handleGoogleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := oauthStateClaims{State: randomToken(), Nonce: randomToken(), Verifier: randomToken()}
+	if u, ok := validUsername(r.URL.Query().Get("u")); ok {
+		st.Username = u
+	}
 	now := s.now()
 	st.Issuer = oauthIssuer
 	st.IssuedAt = jwt.NewNumericDate(now)
@@ -131,6 +137,8 @@ func (s *Server) readOAuthState(r *http.Request, state string) (*oauthStateClaim
 type googleAuthResponse struct {
 	authResponse
 	IsNewUser bool `json:"is_new_user"`
+	// The account was linked by email and its old password was removed.
+	PasswordRemoved bool `json:"password_removed"`
 }
 
 // POST /auth/google/callback {code, state} → {access_token, user, profile, is_new_user} + refresh cookie.
@@ -171,11 +179,12 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, isNew, err := s.resolveGoogleUser(ctx, claims.Subject, email)
+	res, err := s.resolveGoogleUser(ctx, claims.Subject, email, st.Username)
 	if isUniqueViolation(err, "") {
 		// A concurrent callback created the same user or link; the retry finds it.
-		u, isNew, err = s.resolveGoogleUser(ctx, claims.Subject, email)
+		res, err = s.resolveGoogleUser(ctx, claims.Subject, email, st.Username)
 	}
+	u := res.user
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -191,18 +200,31 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := http.StatusOK
-	if isNew {
+	if res.isNew {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, googleAuthResponse{authResponse{AccessToken: tok, User: u, Profile: p}, isNew})
+	writeJSON(w, status, googleAuthResponse{authResponse{AccessToken: tok, User: u, Profile: p}, res.isNew, res.passwordRemoved})
+}
+
+type googleResolution struct {
+	user            User
+	isNew           bool
+	passwordRemoved bool
 }
 
 // resolveGoogleUser finds the user linked to the Google subject, links an
 // existing account with the same (verified) email, or creates a new account
 // that goes through onboarding with a temporary username, like a signup
 // without a username.
-func (s *Server) resolveGoogleUser(ctx context.Context, sub, email string) (u User, isNew bool, err error) {
+//
+// Signup doesn't verify emails, so whoever set an existing account's password
+// may not own its email (account pre-hijacking). When Google is the first to
+// prove ownership (the account has no identity yet), the takeover is undone:
+// the password is cleared and every existing session is revoked.
+func (s *Server) resolveGoogleUser(ctx context.Context, sub, email, wantUsername string) (res googleResolution, err error) {
+	u := &res.user
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		res = googleResolution{} // a retried transaction starts clean
 		err := tx.QueryRow(ctx,
 			`SELECT u.id, u.email, u.created_at FROM user_identities i JOIN users u ON u.id = i.user_id
 			 WHERE i.provider = $1 AND i.subject = $2`, providerGoogle, sub).Scan(&u.ID, &u.Email, &u.CreatedAt)
@@ -212,21 +234,39 @@ func (s *Server) resolveGoogleUser(ctx context.Context, sub, email string) (u Us
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		err = tx.QueryRow(ctx, `SELECT id, email, created_at FROM users WHERE email = $1`, email).
-			Scan(&u.ID, &u.Email, &u.CreatedAt)
+		var hasPassword, verified bool
+		err = tx.QueryRow(ctx,
+			`SELECT id, email, created_at, password_hash IS NOT NULL,
+			        EXISTS (SELECT 1 FROM user_identities WHERE user_id = users.id)
+			 FROM users WHERE email = $1 FOR UPDATE`, email).
+			Scan(&u.ID, &u.Email, &u.CreatedAt, &hasPassword, &verified)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			onboarding := Onboarding{UsernameClaimed: false, SuggestedUsername: s.suggestUsername(ctx, email)}
-			if u, _, err = createAccount(ctx, tx, email, nil, tempUsername(), onboarding); err != nil {
+			if wantUsername != "" {
+				if taken, err := s.usernameTaken(ctx, wantUsername, ""); err == nil && !taken {
+					onboarding.SuggestedUsername = wantUsername
+				}
+			}
+			if *u, _, err = createAccount(ctx, tx, email, nil, tempUsername(), onboarding); err != nil {
 				return err
 			}
-			isNew = true
+			res.isNew = true
 		case err != nil:
 			return err
+		case !verified:
+			now := s.now()
+			if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = NULL, sessions_revoked_at = $2 WHERE id = $1`, u.ID, now); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`, u.ID, now); err != nil {
+				return err
+			}
+			res.passwordRemoved = hasPassword
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)`,
 			providerGoogle, sub, u.ID, email)
 		return err
 	})
-	return u, isNew, err
+	return res, err
 }

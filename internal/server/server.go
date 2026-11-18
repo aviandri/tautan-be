@@ -121,6 +121,7 @@ func (s *Server) Routes() http.Handler {
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
 			r.Get("/me", s.handleMe)
+			r.Patch("/me/password", s.handleSetPassword)
 			r.Group(func(r chi.Router) {
 				r.Use(s.withProfile)
 				r.With(s.revalidatesPage).Patch("/profile", s.handlePatchProfile)
