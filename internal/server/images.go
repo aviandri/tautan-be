@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"image"
 	"image/gif"
@@ -14,7 +13,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -22,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aviandri/tautan-be/internal/storage"
 	"github.com/gen2brain/avif"
 	"github.com/gen2brain/webp"
 	"github.com/jackc/pgx/v5"
@@ -252,7 +251,7 @@ func (s *Server) processImage(ctx context.Context, name string) error {
 	if err := s.db.QueryRow(ctx, `SELECT planned FROM images WHERE name = $1`, name).Scan(&planned); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(filepath.Join(s.cfg.UploadDir, name))
+	data, err := storage.ReadAll(ctx, s.uploads(), name, maxUploadBytes)
 	if err != nil {
 		return err
 	}
@@ -271,12 +270,12 @@ func (s *Server) processImage(ctx context.Context, name string) error {
 			vh := max(1, sb.Dy()*vw/sb.Dx())
 			dst := image.NewRGBA(image.Rect(0, 0, vw, vh))
 			draw.CatmullRom.Scale(dst, dst.Bounds(), src, sb, draw.Src, nil)
-			if err := s.writeVariant(base, vw, "webp", func(w io.Writer) error {
+			if err := s.writeVariant(ctx, base, vw, "webp", func(w io.Writer) error {
 				return webp.Encode(w, dst, webp.Options{Quality: webpQuality, Method: 4})
 			}); err != nil {
 				return err
 			}
-			if err := s.writeVariant(base, vw, "avif", func(w io.Writer) error {
+			if err := s.writeVariant(ctx, base, vw, "avif", func(w io.Writer) error {
 				return avif.Encode(w, dst, avif.Options{Quality: avifQuality, Speed: avifSpeed})
 			}); err != nil {
 				return err
@@ -296,34 +295,20 @@ func variantName(base string, w int, ext string) string {
 	return base + ".w" + strconv.Itoa(w) + "." + ext
 }
 
-// writeVariant encodes to a temp file and renames it into place.
-func (s *Server) writeVariant(base string, w int, ext string, enc func(io.Writer) error) error {
-	final := filepath.Join(s.cfg.UploadDir, variantName(base, w, ext))
-	tmp, err := os.CreateTemp(s.cfg.UploadDir, ".variant-*")
-	if err != nil {
+// writeVariant encodes into memory (variants are at most 1080 px wide) and
+// stores the result; the store replaces objects atomically.
+func (s *Server) writeVariant(ctx context.Context, base string, w int, ext string, enc func(io.Writer) error) error {
+	var buf bytes.Buffer
+	if err := enc(&buf); err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
-	if err := enc(tmp); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), final)
+	return s.uploads().Put(ctx, variantName(base, w, ext), bytes.NewReader(buf.Bytes()), "image/"+ext)
 }
 
 // ResumeImages records uploads that predate the images table and re-queues
 // images whose variants were never finished (e.g. the process restarted).
 func (s *Server) ResumeImages(ctx context.Context) error {
-	entries, err := os.ReadDir(s.cfg.UploadDir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	stored, err := s.uploads().List(ctx)
 	if err != nil {
 		return err
 	}
@@ -339,9 +324,9 @@ func (s *Server) ResumeImages(ctx context.Context) error {
 	for _, n := range names {
 		known[n] = true
 	}
-	for _, e := range entries {
-		if n := e.Name(); uploadNameRE.MatchString(n) && !known[n] {
-			data, err := os.ReadFile(filepath.Join(s.cfg.UploadDir, n))
+	for _, n := range stored {
+		if uploadNameRE.MatchString(n) && !known[n] {
+			data, err := storage.ReadAll(ctx, s.uploads(), n, maxUploadBytes)
 			if err != nil {
 				continue
 			}
@@ -453,17 +438,13 @@ func (s *Server) serveVariant(w http.ResponseWriter, r *http.Request, name strin
 		return false // asked for at least the original's width
 	}
 	base := strings.TrimSuffix(name, filepath.Ext(name))
-	f, err := os.Open(filepath.Join(s.cfg.UploadDir, variantName(base, pick, format)))
+	f, err := s.uploads().Open(r.Context(), variantName(base, pick, format))
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return false
-	}
 	w.Header().Set("Content-Type", "image/"+format)
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	http.ServeContent(w, r, "", st.ModTime(), f)
+	http.ServeContent(w, r, "", f.ModTime(), f)
 	return true
 }

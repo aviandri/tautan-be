@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aviandri/tautan-be/internal/storage/fakes3"
 )
 
 func sizedPNG(w, h int) []byte {
@@ -157,5 +159,56 @@ func TestImageVariants(t *testing.T) {
 	}
 	if m, ok := page.Media[late.URL]; !ok || len(m.Widths) != 0 || m.Widths == nil {
 		t.Errorf("media[pending] = %+v", m)
+	}
+}
+
+func TestImageVariantsOnS3(t *testing.T) {
+	s, _ := newTestServer(t)
+	fake := fakes3.New()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	s.cfg.Storage, s.cfg.S3Bucket, s.cfg.S3Endpoint, s.cfg.S3PathStyle = "s3", "tautan", srv.URL, true
+	s.cfg.S3AccessKeyID, s.cfg.S3SecretAccessKey, s.cfg.S3Prefix = "k", "s", "uploads/"
+	store, err := NewStore(s.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.UseStore(store)
+	s.cfg.UploadDir = t.TempDir() // must stay empty
+	s.cfg.PublicBaseURL = ""
+	s.InlineImages = true
+	h := s.Routes()
+	a := signup(t, h, "s3pics")
+	serve := func(req *http.Request) resp {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return resp{rec, t}
+	}
+	var out struct{ URL string }
+	serve(multipartReq(t, "file", "a.png", sizedPNG(400, 300), a.AccessToken)).expect(201).json(&out)
+	base := strings.TrimSuffix(filepath.Base(out.URL), ".png")
+	keys := strings.Join(fake.Keys(), " ")
+	for _, n := range []string{".png", ".w160.webp", ".w160.avif", ".w320.webp", ".w320.avif"} {
+		if !strings.Contains(keys, "uploads/"+base+n) {
+			t.Errorf("bucket is missing %s (has %s)", base+n, keys)
+		}
+	}
+	if entries, _ := os.ReadDir(s.cfg.UploadDir); len(entries) != 0 {
+		t.Errorf("local upload dir was written: %v", entries)
+	}
+	req := httptest.NewRequest("GET", out.URL+"?w=200", nil)
+	req.Header.Set("Accept", "image/avif,*/*")
+	if r := serve(req).expect(200); r.Header().Get("Content-Type") != "image/avif" || r.Body.Len() == 0 {
+		t.Errorf("variant from S3: %v (%d bytes)", r.Header(), r.Body.Len())
+	}
+	if r := serve(httptest.NewRequest("GET", out.URL, nil)).expect(200); !bytes.HasPrefix(r.Body.Bytes(), []byte("\x89PNG")) {
+		t.Errorf("original from S3: %q", r.Body.Bytes()[:8])
+	}
+	serve(httptest.NewRequest("GET", "/uploads/"+strings.Repeat("0", 32)+".png", nil)).expect(404)
+	serve(httptest.NewRequest("GET", "/uploads/../go.mod", nil)).expect(404)
+
+	// Restart: ResumeImages lists the bucket and finds nothing to redo.
+	if err := s.ResumeImages(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }

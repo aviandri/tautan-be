@@ -12,9 +12,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
-	"os"
 	"path"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -395,20 +393,15 @@ func (s *Server) handleLeadDownload(w http.ResponseWriter, r *http.Request) {
 	local := strings.TrimPrefix(d.FileURL, s.cfg.PublicBaseURL)
 	if strings.HasPrefix(local, "/uploads/") {
 		name := path.Base(local)
-		f, err := os.Open(filepath.Join(s.cfg.UploadDir, name))
+		f, err := s.uploads().Open(r.Context(), name)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "not_found", "file not found")
 			return
 		}
 		defer f.Close()
-		st, err := f.Stat()
-		if err != nil || st.IsDir() {
-			writeError(w, http.StatusNotFound, "not_found", "file not found")
-			return
-		}
 		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		http.ServeContent(w, r, name, st.ModTime(), f)
+		http.ServeContent(w, r, name, f.ModTime(), f)
 		return
 	}
 	http.Redirect(w, r, d.FileURL, http.StatusFound)

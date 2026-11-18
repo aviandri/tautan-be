@@ -249,11 +249,12 @@ func (s *Server) rehostImage(ctx context.Context, raw string) (string, error) {
 	if res.Truncated {
 		return "", errors.New("image too large")
 	}
-	ext, ok := uploadTypes[http.DetectContentType(res.Body)]
+	ctype := http.DetectContentType(res.Body)
+	ext, ok := uploadTypes[ctype]
 	if !ok {
 		return "", errors.New("not a supported image")
 	}
-	u, err := s.storeUpload(bytes.NewReader(res.Body), ext)
+	u, err := s.storeUpload(ctx, bytes.NewReader(res.Body), ext, ctype)
 	if err != nil {
 		return "", err
 	}
