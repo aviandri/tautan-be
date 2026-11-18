@@ -217,6 +217,7 @@ Replace `<domain>` with the real one. Run from a phone on mobile data where note
 - ☐ `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.<domain>/webhooks/xendit/00000000-0000-0000-0000-000000000000` returns the API's own 4xx JSON, not a Cloudflare challenge page. Before the webhook handler PR is deployed, chi's plain-text `404 page not found` is expected; it still proves the request reached the API.
 
 **Operations**
+- ☐ Tokens stay out of Caddy's access log: open a buyer order link (`/<username>/orders/<id>?t=…`) or a reset link, then run `docker compose -f docker-compose.prod.yml logs caddy | grep -c 't=REDACTED\|token=REDACTED'` (> 0) and `… | grep -E '[?&](t|token|unlock)=[A-Za-z0-9_-]{8,}'` (no output).
 - ☐ `ls backups/` shows a dump less than 24 h old, and R2 `tautan-backups/db` has it after the cron run.
 - ☐ `docker compose restart api` during a `curl` loop on `/readyz`: at most a few seconds of 502/503, then 200.
 

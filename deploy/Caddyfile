@@ -23,12 +23,30 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
+		# a default only: pages that send a stricter policy keep it (the buyer order page sends
+		# no-referrer so its ?t= token never leaves in a Referer)
+		?Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
+	# Capability tokens travel in query strings: buyer order links (?t=), email confirm and password
+	# reset links (?token=) and gate unlocks (?unlock=). Redact them from the access log: named params
+	# in the request URI, and the whole query of the Referer (same-origin requests from those pages
+	# send the full URL as Referer).
+	# Cookie and Authorization headers are already redacted by Caddy's default (no log_credentials).
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace t REDACTED
+					replace token REDACTED
+					replace unlock REDACTED
+				}
+				# Referer: drop the whole query string (no capture-group replacement needed)
+				request>headers>Referer regexp "[?].*$" "?REDACTED"
+			}
+		}
 	}
 }
 
