@@ -7,14 +7,15 @@ import (
 
 func prodConfig() Config {
 	return Config{
-		Env:           "production",
-		DatabaseURL:   "postgres://x",
-		JWTSecret:     strings.Repeat("k", 32),
-		PublicBaseURL: "https://api.tautan.id",
-		AppBaseURL:    "https://tautan.id",
-		CORSOrigins:   []string{"https://tautan.id"},
-		CookieSecure:  true,
-		LogFormat:     "json",
+		Env:            "production",
+		DatabaseURL:    "postgres://x",
+		JWTSecret:      strings.Repeat("k", 32),
+		PublicBaseURL:  "https://api.tautan.id",
+		AppBaseURL:     "https://tautan.id",
+		CORSOrigins:    []string{"https://tautan.id"},
+		CookieSecure:   true,
+		LogFormat:      "json",
+		CookieSameSite: "lax",
 	}
 }
 
@@ -33,6 +34,7 @@ func TestValidateProductionRejects(t *testing.T) {
 		"no secure":    func(c *Config) { c.CookieSecure = false },
 		"no database":  func(c *Config) { c.DatabaseURL = "" },
 		"local origin": func(c *Config) { c.CORSOrigins = []string{"http://localhost:3000"} },
+		"bad samesite": func(c *Config) { c.CookieSameSite = "lox" },
 	} {
 		c := prodConfig()
 		mut(&c)

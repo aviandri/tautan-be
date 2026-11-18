@@ -211,10 +211,7 @@ func (s *Server) handlePublicEvent(w http.ResponseWriter, r *http.Request) {
 	if in.Referrer != nil {
 		ref = *in.Referrer // the browser page's document.referrer: the visitor's real source
 	}
-	country := strings.ToUpper(strings.TrimSpace(r.Header.Get(s.cfg.CountryHeader)))
-	if !countryRE.MatchString(country) || country == "XX" {
-		country = ""
-	}
+	country := s.visitorCountry(r)
 	browser, osName := parseUA(ua)
 	host := normalizeHost(s.referrerHost(ref))
 	utm := utmFrom(in.PageURL, [3]string{in.UTMSource, in.UTMMedium, in.UTMCampaign})

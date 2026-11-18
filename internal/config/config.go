@@ -21,8 +21,14 @@ type Config struct {
 	PublicBaseURL string        // base URL used to build absolute upload URLs
 	CookieSecure  bool          // set Secure on the refresh cookie
 	CountryHeader string        // request header carrying the visitor country code
-	TrustProxy    bool          // honour X-Forwarded-For / X-Real-IP (only behind a proxy you control)
-	AppBaseURL    string        // public FE origin, used for page URLs (vCard)
+	// Proxies whose forwarding headers are believed (TRUSTED_PROXIES; see
+	// ParseTrustedProxies). Empty: the TCP peer is the client and
+	// CountryHeader is ignored. Legacy TRUST_PROXY=true means "*".
+	TrustedProxies []string
+	ClientIPHeader string // X-Forwarded-For (default; rightmost untrusted hop) or a single-IP header like CF-Connecting-IP
+	CookieSameSite string // lax (default) | strict | none (none needs COOKIE_SECURE=true)
+	CookieDomain   string // optional, e.g. ".tautan.id"; empty = host-only cookie on the API host
+	AppBaseURL     string // public FE origin, used for page URLs (vCard)
 	// Revalidate webhook (perf 2c): POSTed to RevalidateURL, signed with
 	// RevalidateSecret. Disabled while the secret is empty.
 	RevalidateURL    string
@@ -62,7 +68,6 @@ func Load() Config {
 		PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 		CookieSecure:  env("COOKIE_SECURE", "false") == "true",
 		CountryHeader: env("COUNTRY_HEADER", "CF-IPCountry"),
-		TrustProxy:    env("TRUST_PROXY", "false") == "true",
 		AppBaseURL:    strings.TrimRight(env("APP_BASE_URL", "http://localhost:3000"), "/"),
 	}
 	c.RevalidateURL = env("REVALIDATE_URL", env("FRONTEND_REVALIDATE_URL", c.AppBaseURL+"/api/revalidate"))
@@ -81,6 +86,13 @@ func Load() Config {
 	c.MigrateOnStart = env("MIGRATE_ON_START", "true") == "true"
 	c.ShutdownDelay = dur("SHUTDOWN_DELAY", 0)
 	c.ShutdownTimeout = dur("SHUTDOWN_TIMEOUT", 15*time.Second)
+	c.TrustedProxies = list(env("TRUSTED_PROXIES", ""))
+	if len(c.TrustedProxies) == 0 && env("TRUST_PROXY", "false") == "true" {
+		c.TrustedProxies = []string{"*"}
+	}
+	c.ClientIPHeader = env("CLIENT_IP_HEADER", "X-Forwarded-For")
+	c.CookieSameSite = strings.ToLower(env("COOKIE_SAMESITE", "lax"))
+	c.CookieDomain = env("COOKIE_DOMAIN", "")
 	return c
 }
 
@@ -111,6 +123,9 @@ func (c Config) Validate() error {
 	}
 	if !c.CookieSecure {
 		errs = append(errs, errors.New("COOKIE_SECURE must be true in production"))
+	}
+	if c.CookieSameSite != "lax" && c.CookieSameSite != "strict" && c.CookieSameSite != "none" {
+		errs = append(errs, fmt.Errorf("COOKIE_SAMESITE must be lax, strict or none (got %q)", c.CookieSameSite))
 	}
 	if c.LogFormat != "json" && c.LogFormat != "text" {
 		errs = append(errs, fmt.Errorf("LOG_FORMAT must be json or text (got %q)", c.LogFormat))

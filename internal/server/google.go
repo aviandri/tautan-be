@@ -53,21 +53,11 @@ func pkceChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// setOAuthCookie uses the refresh cookie's SameSite/Secure rules: it is set on
-// a top-level navigation to the API and read on a credentialed fetch from the FE.
+// setOAuthCookie builds the state cookie with the deployment's cookie
+// attributes (s.cookie): it is set on a top-level navigation to the API and
+// read on a credentialed fetch from the FE, exactly like the refresh cookie.
 func (s *Server) setOAuthCookie(w http.ResponseWriter, value string, exp time.Time) {
-	c := &http.Cookie{
-		Name: oauthCookie, Value: value, Path: oauthCookiePath,
-		HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode, Expires: exp,
-	}
-	if s.cfg.CookieSecure {
-		c.SameSite = http.SameSiteNoneMode
-	}
-	if value == "" {
-		c.MaxAge = -1
-		c.Expires = time.Unix(0, 0)
-	}
-	http.SetCookie(w, c)
+	http.SetCookie(w, s.cookie(oauthCookie, value, oauthCookiePath, exp))
 }
 
 // GET /auth/providers → {google: bool}

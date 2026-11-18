@@ -36,6 +36,7 @@ type Server struct {
 	// Quiet disables per-request access logs (used by tests).
 	Quiet    bool
 	draining atomic.Bool
+	proxy    proxyResolver
 	cfg      config.Config
 	db       *pgxpool.Pool
 	now      func() time.Time
@@ -53,6 +54,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		unlockLimiter:  newRateLimiter(10, 10*time.Minute),
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
+		proxy:          newProxyResolver(cfg),
 	}
 	if cfg.GoogleEnabled() {
 		s.google = newOIDCClient(cfg.GoogleIssuer, cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL,
@@ -61,12 +63,17 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 	return s
 }
 
+// newProxyResolver builds the resolver; Run has already rejected bad
+// TRUSTED_PROXIES entries, so an error here only drops the bad entries.
+func newProxyResolver(cfg config.Config) proxyResolver {
+	trusted, _ := config.ParseTrustedProxies(cfg.TrustedProxies)
+	return proxyResolver{trusted: trusted, header: cfg.ClientIPHeader}
+}
+
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
-	if s.cfg.TrustProxy {
-		r.Use(middleware.RealIP)
-	}
+	r.Use(s.proxy.middleware)
 	if !s.Quiet {
 		r.Use(s.accessLog)
 	}

@@ -25,6 +25,9 @@ func Run(cfg config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if _, err := config.ParseTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
