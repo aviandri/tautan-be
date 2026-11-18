@@ -163,6 +163,8 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/auth/password/forgot", s.handleForgotPassword)
 		r.Post("/auth/password/reset", s.handleResetPassword)
 		r.Post("/auth/verify-email", s.handleVerifyEmail)
+		r.Post("/auth/email-change/confirm", s.handleConfirmEmailChange)
+		r.Post("/auth/email-change/revert", s.handleRevertEmailChange)
 
 		r.Get("/public/{username}", s.handlePublicPage)
 		r.Post("/public/{username}/events", s.handlePublicEvent)
@@ -188,6 +190,8 @@ func (s *Server) Routes() http.Handler {
 			r.Patch("/me/password", s.handleSetPassword)
 			r.Post("/me/verification-email", s.handleResendVerification)
 			r.Patch("/me/notifications", s.handlePatchNotifications)
+			r.Post("/me/email", s.handleRequestEmailChange)
+			r.Delete("/me/email/pending", s.handleCancelEmailChange)
 			r.Group(func(r chi.Router) {
 				r.Use(s.withProfile)
 				r.With(s.revalidatesPage).Patch("/profile", s.handlePatchProfile)

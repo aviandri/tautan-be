@@ -257,6 +257,8 @@ type meUser struct {
 	EmailVerified bool     `json:"email_verified"`
 	// Owner notification preferences.
 	NotifySubmissions bool `json:"notify_submissions"`
+	// An email change waiting for its confirm link, or null.
+	PendingEmail *string `json:"pending_email"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -264,8 +266,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	var u meUser
 	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash IS NOT NULL,
 		ARRAY(SELECT DISTINCT provider FROM user_identities WHERE user_id = users.id ORDER BY provider),
-		email_verified_at IS NOT NULL, notify_submissions
-		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities, &u.EmailVerified, &u.NotifySubmissions)
+		email_verified_at IS NOT NULL, notify_submissions,
+		(SELECT new_email::text FROM email_change_tokens t WHERE t.user_id = users.id AND t.kind = 'confirm'
+			AND t.used_at IS NULL AND t.expires_at > $2 ORDER BY t.created_at DESC LIMIT 1)
+		FROM users WHERE id = $1`, userID(r), s.now()).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities, &u.EmailVerified, &u.NotifySubmissions, &u.PendingEmail)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "user no longer exists")
 		return
