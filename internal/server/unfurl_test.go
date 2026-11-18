@@ -20,6 +20,8 @@ func TestPublicIP(t *testing.T) {
 		"100.64.0.1": false, "0.0.0.0": false, "0.1.2.3": false, "224.0.0.1": false, "255.255.255.255": false, "198.18.0.1": false,
 		"::1": false, "::": false, "fe80::1": false, "fc00::1": false, "fd12::1": false, "::ffff:127.0.0.1": false,
 		"::ffff:10.0.0.1": false, "64:ff9b::a00:1": false, "2002:a00:1::": false, "ff02::1": false,
+		// audit L4: IPv4-compatible, SIIT, site-local, 6to4 relay
+		"::127.0.0.1": false, "::ffff:0:7f00:1": false, "fec0::1": false, "192.88.99.1": false, "2a00:1450:4001::1": true,
 	} {
 		if got := publicIP(netip.MustParseAddr(ip)); got != want {
 			t.Errorf("publicIP(%s) = %v, want %v", ip, got, want)
