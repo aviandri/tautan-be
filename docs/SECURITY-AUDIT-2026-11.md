@@ -13,7 +13,7 @@
 | # | Sev | Area | Finding | Status |
 |---|-----|------|---------|--------|
 | H1 | High | Auth | No rate limit on sign-in (or sign-up) | Fixed in be#52 |
-| M1 | Medium | Rate limits | Limiter map can grow without bound; past 10k keys, every hit scans it under one lock | Open |
+| M1 | Medium | Rate limits | Limiter map can grow without bound; past 10k keys, every hit scans it under one lock | Fixed (M1 PR) |
 | M2 | Medium | Auth / CSRF | JSON endpoints accept `text/plain`, so a cross-site form can log a victim into the attacker's account (login CSRF) | Open |
 | M3 | Medium | Auth | Refresh rotation has no reuse detection | Open |
 | L1 | Low | Uploads | Lead-magnet download serves any stored file, including another seller's private `p_` deliverable | Fixed in be#54 |
