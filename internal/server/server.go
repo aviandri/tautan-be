@@ -177,8 +177,8 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/public/{username}/blocks/{id}/lead", s.handleLead)
 		r.Post("/public/{username}/blocks/{id}/enter", s.handleGiveawayEnter)
 		r.Get("/public/{username}/download/{token}", s.handleLeadDownload)
-		r.Post("/public/{username}/orders", s.handleCreateOrder)
-		r.Post("/public/{username}/orders/lookup", s.handleOrderLookup)
+		r.Post("/public/{username}/orders", formOr(s.handleCreateOrderForm, s.handleCreateOrder))
+		r.Post("/public/{username}/orders/lookup", formOr(s.handleOrderLookupForm, s.handleOrderLookup))
 		r.Get("/public/{username}/orders/download/{token}", s.handleOrderDownload)
 		r.Get("/public/{username}/orders/{id}", s.handlePublicOrder)
 
