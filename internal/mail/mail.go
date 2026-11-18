@@ -30,6 +30,7 @@ type Message struct {
 	Subject string
 	Text    string
 	HTML    string
+	ReplyTo string // optional, e.g. the visitor who filled in a form
 }
 
 // Sender delivers a message or returns an error (the outbox retries).
@@ -167,6 +168,13 @@ func Build(from, to *mail.Address, m Message, now time.Time) ([]byte, error) {
 	hdr := func(k, v string) { fmt.Fprintf(&b, "%s: %s\r\n", k, v) }
 	hdr("From", from.String())
 	hdr("To", to.String())
+	if m.ReplyTo != "" {
+		rt, err := mail.ParseAddress(m.ReplyTo)
+		if err != nil {
+			return nil, fmt.Errorf("bad reply-to: %w", err)
+		}
+		hdr("Reply-To", rt.String())
+	}
 	hdr("Subject", mime.QEncoding.Encode("utf-8", m.Subject))
 	hdr("Date", now.Format(time.RFC1123Z))
 	hdr("Message-ID", "<"+hex.EncodeToString(id)+"@"+domain+">")

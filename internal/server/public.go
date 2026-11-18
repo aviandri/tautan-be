@@ -17,6 +17,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+
+	tmail "github.com/aviandri/tautan-be/internal/mail"
 )
 
 // publishedProfileID returns the id of a published profile, or ErrNoRows.
@@ -289,9 +291,18 @@ func (s *Server) handlePublicContact(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx,
+		if err := tx.QueryRow(ctx,
 			`INSERT INTO contact_submissions (profile_id, block_id, name, email, message, contact_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
-			pid, in.BlockID, in.Name, in.Email, in.Message, cid).Scan(&id, &created)
+			pid, in.BlockID, in.Name, in.Email, in.Message, cid).Scan(&id, &created); err != nil {
+			return err
+		}
+		var title string
+		_ = tx.QueryRow(ctx, `SELECT COALESCE(data->>'title', '') FROM blocks WHERE id = $1`, in.BlockID).Scan(&title)
+		if title == "" {
+			title = "your contact form"
+		}
+		return s.notifySubmission(ctx, tx, pid, submissionNote{kind: "contact", blockTitle: title, replyTo: in.Email,
+			fields: []tmail.Field{{Label: "Name", Value: in.Name}, {Label: "Email", Value: in.Email}, {Label: "Message", Value: in.Message}}})
 	})
 	if err != nil {
 		s.internalError(w, err)

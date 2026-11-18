@@ -255,6 +255,8 @@ type meUser struct {
 	HasPassword   bool     `json:"has_password"`
 	Identities    []string `json:"identities"` // linked providers, e.g. ["google"]
 	EmailVerified bool     `json:"email_verified"`
+	// Owner notification preferences.
+	NotifySubmissions bool `json:"notify_submissions"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +264,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	var u meUser
 	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash IS NOT NULL,
 		ARRAY(SELECT DISTINCT provider FROM user_identities WHERE user_id = users.id ORDER BY provider),
-		email_verified_at IS NOT NULL
-		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities, &u.EmailVerified)
+		email_verified_at IS NOT NULL, notify_submissions
+		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities, &u.EmailVerified, &u.NotifySubmissions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "user no longer exists")
 		return
