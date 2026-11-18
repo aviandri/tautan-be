@@ -32,6 +32,8 @@ type fakeOIDC struct {
 	// Overrides for negative tests.
 	mutate func(jwt.MapClaims)
 	signer *rsa.PrivateKey
+	// Extra query for /auth/google/start, e.g. "?u=jane".
+	startQuery string
 }
 
 type fakeGrant struct {
@@ -131,7 +133,7 @@ func googleServer(t *testing.T, f *fakeOIDC) (*Server, http.Handler) {
 // provider: it returns the state cookie and the code Google would send back.
 func (f *fakeOIDC) start(t *testing.T, h http.Handler, claims jwt.MapClaims) (cookie *http.Cookie, code, state string) {
 	t.Helper()
-	r := do(t, h, "GET", "/api/v1/auth/google/start", nil).expect(302)
+	r := do(t, h, "GET", "/api/v1/auth/google/start"+f.startQuery, nil).expect(302)
 	loc, err := url.Parse(r.Header().Get("Location"))
 	if err != nil || !strings.HasPrefix(loc.String(), f.srv.URL+"/o/oauth2/v2/auth?") {
 		t.Fatalf("redirect = %q", r.Header().Get("Location"))
@@ -177,7 +179,8 @@ func googleCallback(t *testing.T, h http.Handler, c *http.Cookie, code, state st
 
 type googleResp struct {
 	authResponse
-	IsNewUser bool `json:"is_new_user"`
+	IsNewUser       bool `json:"is_new_user"`
+	PasswordRemoved bool `json:"password_removed"`
 }
 
 func TestAuthProvidersDisabled(t *testing.T) {
@@ -263,8 +266,12 @@ func TestGoogleLinksExistingAccountByVerifiedEmail(t *testing.T) {
 	if err := testPool.QueryRow(t.Context(), `SELECT count(*) FROM user_identities WHERE user_id = $1`, existing.User.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("identities = %d, %v", n, err)
 	}
-	// The password still works.
-	do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": existing.User.Email, "password": "password123"}).expect(200)
+	// The first Google link removes the (unverified) password; see
+	// TestGoogleLinkUndoesPreHijack.
+	if code := do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": existing.User.Email, "password": "password123"}).
+		expect(401).errCode(); code != "password_not_set" {
+		t.Errorf("code = %s", code)
+	}
 
 	// Even if the Google email changes later, the subject keeps the link.
 	c, code, state = f.start(t, h, jwt.MapClaims{"sub": "g-alice", "email": "alice.new@example.com"})
@@ -374,8 +381,134 @@ func TestGoogleStartRedirectsToFEWhenProviderDown(t *testing.T) {
 	f := newFakeOIDC(t)
 	_, h := googleServer(t, f)
 	f.srv.Close()
-	r := do(t, h, "GET", "/api/v1/auth/google/start", nil).expect(302)
+	r := do(t, h, "GET", "/api/v1/auth/google/start"+f.startQuery, nil).expect(302)
 	if loc := r.Header().Get("Location"); loc != testRedirect+"?error=provider_error" {
 		t.Fatalf("location = %q", loc)
+	}
+}
+
+func TestGoogleLinkUndoesPreHijack(t *testing.T) {
+	f := newFakeOIDC(t)
+	s, h := googleServer(t, f)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+
+	// The attacker registers the victim's address with their own password.
+	attacker := do(t, h, "POST", "/api/v1/auth/signup", map[string]string{
+		"email": "victim@gmail.com", "password": "attacker-pw", "username": "victim",
+	}).expect(201)
+	var a authResponse
+	attacker.json(&a)
+	attackerRefresh := refreshCookieFrom(t, attacker)
+
+	// Later, the real owner signs in with Google.
+	clock = clock.Add(5 * time.Second)
+	c, code, state := f.start(t, h, jwt.MapClaims{"sub": "g-victim", "email": "victim@gmail.com"})
+	var v googleResp
+	r := googleCallback(t, h, c, code, state).expect(200)
+	r.json(&v)
+	if v.User.ID != a.User.ID || !v.PasswordRemoved {
+		t.Fatalf("link = %+v", v)
+	}
+
+	// The attacker is locked out: refresh, access token and password all fail.
+	do(t, h, "POST", "/api/v1/auth/refresh", nil, withCookie(attackerRefresh)).expect(401)
+	do(t, h, "GET", "/api/v1/me", nil, bearer(a.AccessToken)).expect(401)
+	if code := do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": "victim@gmail.com", "password": "attacker-pw"}).
+		expect(401).errCode(); code != "password_not_set" {
+		t.Errorf("login code = %s", code)
+	}
+
+	// The owner's new session works, and refreshes.
+	var me struct{ User meUser }
+	do(t, h, "GET", "/api/v1/me", nil, bearer(v.AccessToken)).expect(200).json(&me)
+	if me.User.HasPassword || len(me.User.Identities) != 1 || me.User.Identities[0] != "google" {
+		t.Errorf("me = %+v", me.User)
+	}
+	do(t, h, "POST", "/api/v1/auth/refresh", nil, withCookie(refreshCookieFrom(t, r))).expect(200)
+
+	// A later Google sign-in (already linked) revokes nothing.
+	clock = clock.Add(5 * time.Second)
+	c, code, state = f.start(t, h, jwt.MapClaims{"sub": "g-victim", "email": "victim@gmail.com"})
+	var again googleResp
+	googleCallback(t, h, c, code, state).expect(200).json(&again)
+	if again.PasswordRemoved {
+		t.Error("second sign-in should not remove anything")
+	}
+	do(t, h, "GET", "/api/v1/me", nil, bearer(v.AccessToken)).expect(200)
+
+	// The owner adds a password of their own.
+	if code := do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "short"}, bearer(v.AccessToken)).
+		expect(400).errCode(); code != "invalid_password" {
+		t.Errorf("code = %s", code)
+	}
+	do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "owner-password"}, bearer(v.AccessToken)).expect(204)
+	if code := do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "another-one"}, bearer(v.AccessToken)).
+		expect(409).errCode(); code != "password_already_set" {
+		t.Errorf("code = %s", code)
+	}
+	do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": "victim@gmail.com", "password": "owner-password"}).expect(200)
+	do(t, h, "GET", "/api/v1/me", nil, bearer(v.AccessToken)).expect(200).json(&me)
+	if !me.User.HasPassword {
+		t.Error("has_password should be true")
+	}
+}
+
+func TestGoogleSecondIdentityDoesNotRevoke(t *testing.T) {
+	f := newFakeOIDC(t)
+	s, h := googleServer(t, f)
+	clock := time.Now()
+	s.now = func() time.Time { return clock }
+
+	c, code, state := f.start(t, h, jwt.MapClaims{"sub": "g-1", "email": "x@gmail.com"})
+	var first googleResp
+	googleCallback(t, h, c, code, state).expect(201).json(&first)
+	do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "my-password"}, bearer(first.AccessToken)).expect(204)
+
+	// Another Google account with the same email: the email was already
+	// verified through Google, so the password and sessions stay.
+	clock = clock.Add(5 * time.Second)
+	c, code, state = f.start(t, h, jwt.MapClaims{"sub": "g-2", "email": "x@gmail.com"})
+	var second googleResp
+	googleCallback(t, h, c, code, state).expect(200).json(&second)
+	if second.PasswordRemoved || second.User.ID != first.User.ID {
+		t.Fatalf("second = %+v", second)
+	}
+	do(t, h, "GET", "/api/v1/me", nil, bearer(first.AccessToken)).expect(200)
+	do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": "x@gmail.com", "password": "my-password"}).expect(200)
+}
+
+func TestSetPasswordWhenAlreadySet(t *testing.T) {
+	_, h := newTestServer(t)
+	a := signup(t, h, "carol")
+	do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "whatever-1"}, bearer(a.AccessToken)).expect(409)
+	do(t, h, "PATCH", "/api/v1/me/password", map[string]string{"new_password": "whatever-1"}).expect(401)
+	var me struct{ User meUser }
+	do(t, h, "GET", "/api/v1/me", nil, bearer(a.AccessToken)).expect(200).json(&me)
+	if !me.User.HasPassword || len(me.User.Identities) != 0 {
+		t.Errorf("me = %+v", me.User)
+	}
+}
+
+func TestGoogleCarriesLandingPageUsername(t *testing.T) {
+	f := newFakeOIDC(t)
+	_, h := googleServer(t, f)
+	signup(t, h, "taken.name")
+
+	for _, tc := range []struct{ q, email, want string }{
+		{"?u=Jane.Picks", "j1@gmail.com", "jane.picks"},
+		{"?u=taken.name", "jay2@gmail.com", "jay2"},   // taken → falls back to the email
+		{"?u=tmp.sneaky", "jay3@gmail.com", "jay3"},   // never claimable
+		{"?u=%3Cscript%3E", "jay4@gmail.com", "jay4"}, // invalid
+	} {
+		f.startQuery = tc.q
+		c, code, state := f.start(t, h, jwt.MapClaims{"sub": "g-" + tc.email, "email": tc.email})
+		var a googleResp
+		googleCallback(t, h, c, code, state).expect(201).json(&a)
+		var ob Onboarding
+		_ = json.Unmarshal(a.Profile.Onboarding, &ob)
+		if ob.SuggestedUsername != tc.want || ob.UsernameClaimed {
+			t.Errorf("%s: onboarding = %+v, want suggestion %q", tc.q, ob, tc.want)
+		}
 	}
 }

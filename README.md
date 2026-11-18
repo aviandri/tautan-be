@@ -78,6 +78,9 @@ Notes:
   wherever login works: FE and API same-site with the default `lax`, or `COOKIE_SAMESITE=none`
   over HTTPS for different domains.
 - A Google account whose **verified** email matches an existing account is linked to it.
+  Signup doesn't verify emails, so on that first link the account's password is cleared and
+  all its sessions are revoked (pre-hijack protection). The owner can add a new password
+  under Settings → Account (`PATCH /me/password`).
   Otherwise a new account is created and goes through onboarding with a temporary
   username, like a signup without a username. Unverified emails are rejected (403 `email_not_verified`).
 - Tests use a fake OIDC server (`internal/server/google_test.go`), so CI needs no real credentials.

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5"
 )
 
 const refreshCookie = "tautan_refresh"
@@ -31,18 +32,19 @@ func (s *Server) issueAccessToken(userID string) (string, error) {
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(s.cfg.JWTSecret))
 }
 
-func (s *Server) parseAccessToken(tok string) (string, error) {
+// parseAccessToken returns the user id and issue time of a valid access token.
+func (s *Server) parseAccessToken(tok string) (string, time.Time, error) {
 	claims := &jwt.RegisteredClaims{}
 	_, err := jwt.ParseWithClaims(tok, claims, func(t *jwt.Token) (any, error) {
 		return []byte(s.cfg.JWTSecret), nil
 	}, jwt.WithValidMethods([]string{"HS256"}), jwt.WithIssuer("tautan"), jwt.WithTimeFunc(s.now))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
-	if claims.Subject == "" {
-		return "", errors.New("missing subject")
+	if claims.Subject == "" || claims.IssuedAt == nil {
+		return "", time.Time{}, errors.New("missing subject or iat")
 	}
-	return claims.Subject, nil
+	return claims.Subject, claims.IssuedAt.Time, nil
 }
 
 func hashToken(raw string) string {
@@ -116,9 +118,21 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "missing bearer token")
 			return
 		}
-		uid, err := s.parseAccessToken(tok)
+		uid, iat, err := s.parseAccessToken(tok)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid_token", "access token is invalid or expired")
+			return
+		}
+		// Tokens issued before the account's sessions were revoked are dead.
+		// iat has second precision, so compare against the revocation second.
+		var revoked *time.Time
+		err = s.db.QueryRow(r.Context(), `SELECT sessions_revoked_at FROM users WHERE id = $1`, uid).Scan(&revoked)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && revoked != nil && iat.Before(revoked.Truncate(time.Second))) {
+			writeError(w, http.StatusUnauthorized, "invalid_token", "access token is invalid or expired")
+			return
+		}
+		if err != nil {
+			s.internalError(w, err)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userIDKey, uid)))
