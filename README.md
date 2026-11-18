@@ -102,4 +102,8 @@ internal/server  chi router, handlers, middleware
 
 ## Deploy
 
+Production guide (options, costs, step by step, smoke tests): [docs/DEPLOY.md](docs/DEPLOY.md).
+Every env var across the API and FE: [docs/ENV.md](docs/ENV.md). Single-VPS bundle: [`deploy/`](deploy/).
+
+
 `docker compose up --build` runs Postgres 17 plus the API.
