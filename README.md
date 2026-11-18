@@ -117,6 +117,7 @@ then `failed`. Bodies are cleared once a message is sent or fails, because they 
   the email, signs out every session and sends the old address a notice with a 7-day undo link.
 - Lead magnets: with `MAIL_DRIVER=smtp` and a confirmed owner, the download link is also emailed
   to the visitor (7-day link, 3 per recipient per day). The on-page link always works.
+- Giveaways: drawing a winner emails them (confirmed owners; `{notify: false}` skips it).
 - New features send mail with `s.enqueueEmail(ctx, tx, kind, mail.Message{...})`. Put
   templates in `internal/mail/templates.go`.
 
