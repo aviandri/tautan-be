@@ -155,3 +155,18 @@ func LeadMagnetDelivery(to, pageName, pageURL, title, link string) Message {
 		Footer:  "You got this because this address was entered on that page. If that wasn't you, ignore this email; we won't send more.",
 	}.message(to)
 }
+
+// GiveawayWinner tells the drawn entrant they won. Owner text (title, prize,
+// page name) is already public on the card; it's flattened to one line and
+// escaped. No Reply-To: the owner's account email stays private.
+func GiveawayWinner(to, pageName, pageURL, title, prize string) Message {
+	page := oneLine(pageName, 60)
+	return action{
+		Subject: oneLine("You won: "+oneLine(title, 80)+" ("+page+")", 120),
+		Heading: "You won " + oneLine(prize, 120) + "!",
+		Body:    "Congratulations: you were drawn as the winner of \"" + oneLine(title, 100) + "\" on " + page + ". They'll get in touch at this address to arrange your prize. You can also reach them through their page.",
+		Button:  "Visit " + page,
+		Link:    pageURL,
+		Footer:  "You got this because this address entered the giveaway on that page. Tautan hosts the page and never asks for payment to claim a prize.",
+	}.message(to)
+}

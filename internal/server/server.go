@@ -54,6 +54,8 @@ type Server struct {
 	resetLimiter   *rateLimiter
 	// Lead-magnet emails per card per hour (on top of per-IP and per-recipient caps).
 	leadPageLimiter *rateLimiter
+	// Giveaway winner emails per card per day.
+	winnerCardLimiter *rateLimiter
 	// InlineRemote resolves oEmbed/RSS content during the save request (tests, seeding).
 	InlineRemote bool
 	// InlineImages encodes image variants during the upload request (tests, seeding).
@@ -71,21 +73,22 @@ type Server struct {
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 	s := &Server{
 		cfg: cfg, db: pool, now: time.Now,
-		eventLimiter:    newRateLimiter(120, time.Minute),
-		contactLimiter:  newRateLimiter(5, 10*time.Minute),
-		formLimiter:     newRateLimiter(10, 10*time.Minute),
-		unfurlLimiter:   newRateLimiter(30, time.Minute),
-		engageLimiter:   newRateLimiter(30, 10*time.Minute),
-		askLimiter:      newRateLimiter(5, 10*time.Minute),
-		engageIPLimiter: newRateLimiter(300, 10*time.Minute),
-		askIPLimiter:    newRateLimiter(60, 10*time.Minute),
-		unlockLimiter:   newRateLimiter(10, 10*time.Minute),
-		resetLimiter:    newRateLimiter(10, 15*time.Minute),
-		leadPageLimiter: newRateLimiter(100, time.Hour),
-		mailWake:        make(chan struct{}, 1),
-		fetcher:         newSafeFetcher(false),
-		reval:           newRevalidator(),
-		proxy:           newProxyResolver(cfg),
+		eventLimiter:      newRateLimiter(120, time.Minute),
+		contactLimiter:    newRateLimiter(5, 10*time.Minute),
+		formLimiter:       newRateLimiter(10, 10*time.Minute),
+		unfurlLimiter:     newRateLimiter(30, time.Minute),
+		engageLimiter:     newRateLimiter(30, 10*time.Minute),
+		askLimiter:        newRateLimiter(5, 10*time.Minute),
+		engageIPLimiter:   newRateLimiter(300, 10*time.Minute),
+		askIPLimiter:      newRateLimiter(60, 10*time.Minute),
+		unlockLimiter:     newRateLimiter(10, 10*time.Minute),
+		resetLimiter:      newRateLimiter(10, 15*time.Minute),
+		leadPageLimiter:   newRateLimiter(100, time.Hour),
+		winnerCardLimiter: newRateLimiter(winnerEmailsPerCard, 24*time.Hour),
+		mailWake:          make(chan struct{}, 1),
+		fetcher:           newSafeFetcher(false),
+		reval:             newRevalidator(),
+		proxy:             newProxyResolver(cfg),
 
 		providerTestLimiter: newRateLimiter(20, 10*time.Minute),
 		orderLimiter:        newRateLimiter(10, 10*time.Minute),

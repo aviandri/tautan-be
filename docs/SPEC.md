@@ -541,7 +541,8 @@ Owner endpoints:
   - `DELETE /questions/{id}` → `204`.
 - **Giveaways:**
   - `GET /giveaways/{id}` → `{entries, winner: {email, name, display, drawn_at} | null}`.
-  - `POST /giveaways/{id}/draw` → uniformly random (crypto/rand), only after `ends_at` (otherwise `409 not_ended`, or `409 no_entries`). Drawing again replaces the winner.
+  - `POST /giveaways/{id}/draw` `{notify?: bool}` (body optional) → uniformly random (crypto/rand), only after `ends_at` (otherwise `409 not_ended`, or `409 no_entries`). Drawing again replaces the winner.
+  - **Winner email (P1 email item 3):** unless `notify: false`, the drawn entrant gets a "You won: <title> (<page>)" email through the outbox. It contains the prize, the page link and "they'll get in touch at this address". It has no Reply-To, so the owner's account email stays private. The response gains `notified: bool`. The email goes out only when the owner's email is confirmed. Caps: 5 winner emails per card per day (redraws included) and 2 per recipient per day across all pages. Past a cap, the draw still succeeds with `notified: false`. A redraw emails the new winner; the previous winner is not told, so the FE should say so before redrawing.
   - Answer, pin, delete and draw fire the revalidate webhook.
 
 The same-page form check (`rate_card.form_block_id`, `payment.confirm` kind form) accepts `form`, `contact_form` and `email_signup` blocks.
