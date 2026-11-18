@@ -26,6 +26,12 @@ func main() {
 		}()
 		cfg.DatabaseURL = devdb.URL()
 	}
+	if cfg.PaymentsEncryptionKey == "" {
+		// Dev only: a fixed key so payment settings work out of the box.
+		// Never use this key anywhere else; production sets its own.
+		cfg.PaymentsEncryptionKey = "dGF1dGFuLWRldi1wYXltZW50cy1rZXktZG8tbm90LXU="
+		log.Printf("PAYMENTS_ENCRYPTION_KEY not set: using the built-in dev key")
+	}
 	if err := server.Run(cfg); err != nil {
 		log.Printf("server: %v", err)
 	}

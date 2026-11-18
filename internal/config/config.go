@@ -58,6 +58,11 @@ type Config struct {
 	S3SecretAccessKey string
 	S3Prefix          string
 	S3PathStyle       bool
+	// Payments: AES-256-GCM key for provider credentials at rest (32 bytes, hex
+	// or base64). Payments are off while it is empty. Retired keys stay listed
+	// in PaymentsEncryptionKeysOld (comma-separated) until every row is re-saved.
+	PaymentsEncryptionKey     string
+	PaymentsEncryptionKeysOld []string
 }
 
 // GoogleEnabled reports whether Google sign-in is configured.
@@ -87,6 +92,8 @@ func Load() Config {
 	c.GoogleClientID = env("GOOGLE_CLIENT_ID", "")
 	c.GoogleClientSecret = env("GOOGLE_CLIENT_SECRET", "")
 	c.GoogleRedirectURL = env("GOOGLE_REDIRECT_URL", "")
+	c.PaymentsEncryptionKey = env("PAYMENTS_ENCRYPTION_KEY", "")
+	c.PaymentsEncryptionKeysOld = list(env("PAYMENTS_ENCRYPTION_KEYS_OLD", ""))
 	c.GoogleIssuer = strings.TrimRight(env("GOOGLE_ISSUER", "https://accounts.google.com"), "/")
 	c.Env = strings.ToLower(env("APP_ENV", "development"))
 	defFormat := "text"
@@ -146,6 +153,9 @@ func (c Config) Validate() error {
 	}
 	if c.CookieSameSite != "lax" && c.CookieSameSite != "strict" && c.CookieSameSite != "none" {
 		errs = append(errs, fmt.Errorf("COOKIE_SAMESITE must be lax, strict or none (got %q)", c.CookieSameSite))
+	}
+	if c.PaymentsEncryptionKey == "" {
+		errs = append(errs, errors.New("PAYMENTS_ENCRYPTION_KEY is required in production (32 bytes, base64 or hex: openssl rand -base64 32)"))
 	}
 	if c.LogFormat != "json" && c.LogFormat != "text" {
 		errs = append(errs, fmt.Errorf("LOG_FORMAT must be json or text (got %q)", c.LogFormat))

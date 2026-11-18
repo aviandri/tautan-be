@@ -16,6 +16,8 @@ func prodConfig() Config {
 		CookieSecure:   true,
 		LogFormat:      "json",
 		CookieSameSite: "lax",
+
+		PaymentsEncryptionKey: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
 	}
 }
 
@@ -27,14 +29,15 @@ func TestValidateProductionOK(t *testing.T) {
 
 func TestValidateProductionRejects(t *testing.T) {
 	for name, mut := range map[string]func(*Config){
-		"dev jwt":      func(c *Config) { c.JWTSecret = devJWTSecret },
-		"short jwt":    func(c *Config) { c.JWTSecret = "short" },
-		"http base":    func(c *Config) { c.PublicBaseURL = "http://api.tautan.id" },
-		"origin path":  func(c *Config) { c.CORSOrigins = []string{"https://tautan.id/"} },
-		"no secure":    func(c *Config) { c.CookieSecure = false },
-		"no database":  func(c *Config) { c.DatabaseURL = "" },
-		"local origin": func(c *Config) { c.CORSOrigins = []string{"http://localhost:3000"} },
-		"bad samesite": func(c *Config) { c.CookieSameSite = "lox" },
+		"dev jwt":         func(c *Config) { c.JWTSecret = devJWTSecret },
+		"short jwt":       func(c *Config) { c.JWTSecret = "short" },
+		"http base":       func(c *Config) { c.PublicBaseURL = "http://api.tautan.id" },
+		"origin path":     func(c *Config) { c.CORSOrigins = []string{"https://tautan.id/"} },
+		"no secure":       func(c *Config) { c.CookieSecure = false },
+		"no database":     func(c *Config) { c.DatabaseURL = "" },
+		"local origin":    func(c *Config) { c.CORSOrigins = []string{"http://localhost:3000"} },
+		"bad samesite":    func(c *Config) { c.CookieSameSite = "lox" },
+		"no payments key": func(c *Config) { c.PaymentsEncryptionKey = "" },
 	} {
 		c := prodConfig()
 		mut(&c)

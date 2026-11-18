@@ -31,6 +31,7 @@ func testConfig() config.Config {
 	c := config.Load()
 	c.JWTSecret = "test-secret"
 	c.CORSOrigins = []string{"http://localhost:3000"}
+	c.PaymentsEncryptionKey = "" // payment tests opt in with newPaymentsServer
 	return c
 }
 
