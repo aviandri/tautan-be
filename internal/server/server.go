@@ -52,6 +52,8 @@ type Server struct {
 	mailer         mail.Sender
 	mailWake       chan struct{}
 	resetLimiter   *rateLimiter
+	// Sign-in attempts per IP, failed sign-ins per account, sign-ups per IP.
+	loginIPLimiter, loginFailLimiter, signupLimiter *rateLimiter
 	// Lead-magnet emails per card per hour (on top of per-IP and per-recipient caps).
 	leadPageLimiter *rateLimiter
 	// Giveaway winner emails per card per day.
@@ -73,16 +75,20 @@ type Server struct {
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 	s := &Server{
 		cfg: cfg, db: pool, now: time.Now,
-		eventLimiter:      newRateLimiter(120, time.Minute),
-		contactLimiter:    newRateLimiter(5, 10*time.Minute),
-		formLimiter:       newRateLimiter(10, 10*time.Minute),
-		unfurlLimiter:     newRateLimiter(30, time.Minute),
-		engageLimiter:     newRateLimiter(30, 10*time.Minute),
-		askLimiter:        newRateLimiter(5, 10*time.Minute),
-		engageIPLimiter:   newRateLimiter(300, 10*time.Minute),
-		askIPLimiter:      newRateLimiter(60, 10*time.Minute),
-		unlockLimiter:     newRateLimiter(10, 10*time.Minute),
-		resetLimiter:      newRateLimiter(10, 15*time.Minute),
+		eventLimiter:    newRateLimiter(120, time.Minute),
+		contactLimiter:  newRateLimiter(5, 10*time.Minute),
+		formLimiter:     newRateLimiter(10, 10*time.Minute),
+		unfurlLimiter:   newRateLimiter(30, time.Minute),
+		engageLimiter:   newRateLimiter(30, 10*time.Minute),
+		askLimiter:      newRateLimiter(5, 10*time.Minute),
+		engageIPLimiter: newRateLimiter(300, 10*time.Minute),
+		askIPLimiter:    newRateLimiter(60, 10*time.Minute),
+		unlockLimiter:   newRateLimiter(10, 10*time.Minute),
+		resetLimiter:    newRateLimiter(10, 15*time.Minute),
+		// Generous per IP: carrier-grade NAT puts many phones behind one address.
+		loginIPLimiter:    newRateLimiter(60, 15*time.Minute),
+		loginFailLimiter:  newRateLimiter(10, 15*time.Minute),
+		signupLimiter:     newRateLimiter(20, time.Hour),
 		leadPageLimiter:   newRateLimiter(100, time.Hour),
 		winnerCardLimiter: newRateLimiter(winnerEmailsPerCard, 24*time.Hour),
 		mailWake:          make(chan struct{}, 1),

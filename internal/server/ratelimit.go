@@ -46,3 +46,13 @@ func (l *rateLimiter) Allow(key string) bool {
 	w.n++
 	return true
 }
+
+// Exceeded reports whether key is at its limit in the current window, without
+// counting a hit. Pair it with Allow to count only some outcomes (e.g. failed
+// logins).
+func (l *rateLimiter) Exceeded(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, ok := l.hits[key]
+	return ok && l.now().Sub(w.start) < l.window && w.n >= l.limit
+}
