@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aviandri/tautan-be/internal/config"
+	"github.com/aviandri/tautan-be/internal/storage"
 )
 
 type Server struct {
@@ -37,6 +39,7 @@ type Server struct {
 	Quiet    bool
 	draining atomic.Bool
 	proxy    proxyResolver
+	store    storage.Store // nil: local disk at cfg.UploadDir (see uploads())
 	cfg      config.Config
 	db       *pgxpool.Pool
 	now      func() time.Time
@@ -172,4 +175,32 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// UseStore sets the upload store (Run picks it from STORAGE).
+func (s *Server) UseStore(st storage.Store) { s.store = st }
+
+// uploads is the upload store: the configured one, else local disk at
+// cfg.UploadDir (read at call time, so tests can point it at a temp dir).
+func (s *Server) uploads() storage.Store {
+	if s.store != nil {
+		return s.store
+	}
+	return storage.Local{Dir: s.cfg.UploadDir}
+}
+
+// NewStore builds the store STORAGE selects.
+func NewStore(cfg config.Config) (storage.Store, error) {
+	switch cfg.Storage {
+	case "", "local":
+		return storage.Local{Dir: cfg.UploadDir}, nil
+	case "s3", "r2":
+		return storage.NewS3(storage.S3Config{
+			Bucket: cfg.S3Bucket, Region: cfg.S3Region, Endpoint: cfg.S3Endpoint,
+			AccessKeyID: cfg.S3AccessKeyID, SecretAccessKey: cfg.S3SecretAccessKey,
+			Prefix: cfg.S3Prefix, PathStyle: cfg.S3PathStyle,
+		})
+	default:
+		return nil, fmt.Errorf("STORAGE must be local or s3 (got %q)", cfg.Storage)
+	}
 }

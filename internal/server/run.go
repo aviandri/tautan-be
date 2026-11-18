@@ -43,7 +43,12 @@ func Run(cfg config.Config) error {
 	}
 	defer pool.Close()
 
+	store, err := NewStore(cfg)
+	if err != nil {
+		return err
+	}
 	api := New(cfg, pool)
+	api.UseStore(store)
 	workers, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	go api.RunRemoteRefresher(workers)

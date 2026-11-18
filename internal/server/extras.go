@@ -9,11 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/aviandri/tautan-be/internal/storage"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 )
@@ -234,18 +234,15 @@ func (s *Server) handleVCard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// vcardPhoto embeds a locally stored avatar (≤1 MB) so phones show it offline;
-// anything else is referenced by URL.
+// vcardPhoto embeds an avatar from the upload store (≤1 MB) so phones show
+// it offline; anything else is referenced by URL.
 func (s *Server) vcardPhoto(avatar string) string {
 	prefix := s.cfg.PublicBaseURL + "/uploads/"
 	if name, ok := strings.CutPrefix(avatar, prefix); ok && !strings.ContainsAny(name, `/\`) {
-		path := filepath.Join(s.cfg.UploadDir, name)
-		if fi, err := os.Stat(path); err == nil && fi.Size() <= 1<<20 {
-			if data, err := os.ReadFile(path); err == nil {
-				typ := map[string]string{".png": "PNG", ".jpg": "JPEG", ".gif": "GIF", ".webp": "WEBP"}[strings.ToLower(filepath.Ext(name))]
-				if typ != "" {
-					return "PHOTO;ENCODING=b;TYPE=" + typ + ":" + base64.StdEncoding.EncodeToString(data)
-				}
+		typ := map[string]string{".png": "PNG", ".jpg": "JPEG", ".gif": "GIF", ".webp": "WEBP"}[strings.ToLower(filepath.Ext(name))]
+		if typ != "" {
+			if data, err := storage.ReadAll(context.Background(), s.uploads(), name, 1<<20); err == nil {
+				return "PHOTO;ENCODING=b;TYPE=" + typ + ":" + base64.StdEncoding.EncodeToString(data)
 			}
 		}
 	}

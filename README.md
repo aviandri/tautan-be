@@ -28,7 +28,11 @@ and the older `/healthz` and `/api/v1/health` (DB ping).
 | `JWT_SECRET` | `dev-secret-change-me` | HMAC secret for access tokens |
 | `ACCESS_TTL` / `REFRESH_TTL` | `15m` / `720h` | token lifetimes |
 | `CORS_ORIGINS` | `http://localhost:3000` | comma separated, credentials allowed |
-| `UPLOAD_DIR` | `./uploads` | served at `/uploads/*` |
+| `UPLOAD_DIR` | `./uploads` | local storage directory (`STORAGE=local`) |
+| `STORAGE` | `local` | `local` or `s3` (any S3-compatible bucket: Cloudflare R2, AWS S3, MinIO). Files are served by the API at `/uploads/*` either way |
+| `S3_BUCKET` / `S3_ENDPOINT` / `S3_REGION` | – / (AWS) / `auto` | R2: `S3_ENDPOINT=https://<account>.r2.cloudflarestorage.com`, region `auto` |
+| `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` | – | required with `STORAGE=s3` |
+| `S3_PREFIX` / `S3_PATH_STYLE` | `uploads/` / `false` | key prefix; path-style addressing for MinIO |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | used to build upload URLs |
 | `COOKIE_SECURE` | `false` | set `true` behind HTTPS |
 | `COOKIE_SAMESITE` | `lax` | `lax` / `strict` / `none`. Lax works when FE and API share a registrable domain (`tautan.id` + `api.tautan.id`); `none` (forces Secure) only for different domains |

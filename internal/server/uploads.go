@@ -2,16 +2,19 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/aviandri/tautan-be/internal/storage"
 )
 
 const (
@@ -100,7 +103,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		src = bytes.NewReader(data)
 	}
-	fileURL, err := s.storeUpload(src, ext)
+	fileURL, err := s.storeUpload(r.Context(), src, ext, strings.SplitN(ctype, ";", 2)[0])
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -122,19 +125,34 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, out)
 }
 
-// serveUploads serves stored files without directory listings.
+// storedNameRE matches every name the API stores: originals
+// (<32 hex>.<ext>) and image variants (<32 hex>.w<width>.<avif|webp>).
+var storedNameRE = regexp.MustCompile(`^[0-9a-f]{32}(\.w[0-9]{1,5})?\.[a-z0-9]{2,5}$`)
+
+// serveUploads serves stored files from the upload store. No listings, no
+// paths: only names the API could have written.
 func (s *Server) serveUploads() http.Handler {
-	fs := http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.cfg.UploadDir)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/") {
+		name := strings.TrimPrefix(r.URL.Path, "/uploads/")
+		if !storedNameRE.MatchString(name) {
 			http.NotFound(w, r)
 			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.URL.Query().Has("w") && s.serveVariant(w, r, strings.TrimPrefix(r.URL.Path, "/uploads/")) {
+		if r.URL.Query().Has("w") && s.serveVariant(w, r, name) {
 			return
 		}
-		switch strings.ToLower(filepath.Ext(r.URL.Path)) {
+		f, err := s.uploads().Open(r.Context(), name)
+		if errors.Is(err, storage.ErrNotExist) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		defer f.Close()
+		switch strings.ToLower(filepath.Ext(name)) {
 		case ".png", ".jpg", ".gif", ".webp":
 		case ".avif":
 			w.Header().Set("Content-Type", "image/avif")
@@ -144,7 +162,7 @@ func (s *Server) serveUploads() http.Handler {
 		if w.Header().Get("Cache-Control") == "" {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
-		fs.ServeHTTP(w, r)
+		http.ServeContent(w, r, name, f.ModTime(), f)
 	})
 }
 
@@ -166,26 +184,14 @@ func safeFileName(n string) string {
 	return n
 }
 
-// storeUpload writes r to a new randomly named file and returns its public URL.
-func (s *Server) storeUpload(r io.Reader, ext string) (string, error) {
+// storeUpload stores r under a new random name and returns its public URL.
+func (s *Server) storeUpload(ctx context.Context, r io.Reader, ext, contentType string) (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	name := hex.EncodeToString(b) + ext
-	if err := os.MkdirAll(s.cfg.UploadDir, 0o755); err != nil {
-		return "", err
-	}
-	dst, err := os.OpenFile(filepath.Join(s.cfg.UploadDir, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return "", err
-	}
-	if _, err := io.Copy(dst, r); err != nil {
-		dst.Close()
-		os.Remove(dst.Name())
-		return "", err
-	}
-	if err := dst.Close(); err != nil {
+	if err := s.uploads().Put(ctx, name, r, contentType); err != nil {
 		return "", err
 	}
 	return s.cfg.PublicBaseURL + "/uploads/" + name, nil

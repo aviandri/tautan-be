@@ -46,6 +46,18 @@ type Config struct {
 	MigrateOnStart  bool          // apply pending migrations before serving (default true)
 	ShutdownDelay   time.Duration // after SIGTERM: report not-ready for this long before closing listeners
 	ShutdownTimeout time.Duration // max time to drain in-flight requests
+
+	// Upload storage: "local" (UploadDir, default) or "s3" (any S3-compatible
+	// bucket: Cloudflare R2, AWS S3, MinIO). Files are still served by the API
+	// at /uploads/<name> either way.
+	Storage           string
+	S3Bucket          string
+	S3Region          string // "auto" for R2
+	S3Endpoint        string // e.g. https://<account>.r2.cloudflarestorage.com; empty for AWS
+	S3AccessKeyID     string
+	S3SecretAccessKey string
+	S3Prefix          string
+	S3PathStyle       bool
 }
 
 // GoogleEnabled reports whether Google sign-in is configured.
@@ -93,6 +105,14 @@ func Load() Config {
 	c.ClientIPHeader = env("CLIENT_IP_HEADER", "X-Forwarded-For")
 	c.CookieSameSite = strings.ToLower(env("COOKIE_SAMESITE", "lax"))
 	c.CookieDomain = env("COOKIE_DOMAIN", "")
+	c.Storage = strings.ToLower(env("STORAGE", "local"))
+	c.S3Bucket = env("S3_BUCKET", "")
+	c.S3Region = env("S3_REGION", "auto")
+	c.S3Endpoint = env("S3_ENDPOINT", "")
+	c.S3AccessKeyID = env("S3_ACCESS_KEY_ID", "")
+	c.S3SecretAccessKey = env("S3_SECRET_ACCESS_KEY", "")
+	c.S3Prefix = env("S3_PREFIX", "uploads/")
+	c.S3PathStyle = env("S3_PATH_STYLE", "false") == "true"
 	return c
 }
 
