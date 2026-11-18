@@ -38,11 +38,24 @@ func TestValidateProductionRejects(t *testing.T) {
 		"local origin":    func(c *Config) { c.CORSOrigins = []string{"http://localhost:3000"} },
 		"bad samesite":    func(c *Config) { c.CookieSameSite = "lox" },
 		"no payments key": func(c *Config) { c.PaymentsEncryptionKey = "" },
+		"fake payments":   func(c *Config) { c.PaymentsFake = true },
 	} {
 		c := prodConfig()
 		mut(&c)
 		if c.Validate() == nil {
 			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestFakePayments(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		flag bool
+		want bool
+	}{{"development", false, false}, {"development", true, true}, {"production", true, false}, {"staging", true, true}} {
+		if got := (Config{Env: tc.env, PaymentsFake: tc.flag}).FakePayments(); got != tc.want {
+			t.Errorf("env=%s flag=%v: FakePayments() = %v", tc.env, tc.flag, got)
 		}
 	}
 }

@@ -64,6 +64,10 @@ type Config struct {
 	// in PaymentsEncryptionKeysOld (comma-separated) until every row is re-saved.
 	PaymentsEncryptionKey     string
 	PaymentsEncryptionKeysOld []string
+	// PaymentsFake (PAYMENTS_FAKE=1) turns on the dev-only fake payment
+	// provider. It also needs APP_ENV != production; with production set the
+	// API refuses to start.
+	PaymentsFake bool
 
 	// Transactional email. MAIL_DRIVER=log (default) writes messages to the
 	// log instead of sending (bodies only outside production).
@@ -82,6 +86,10 @@ func (c Config) GoogleEnabled() bool {
 
 // Production reports whether APP_ENV=production.
 func (c Config) Production() bool { return c.Env == "production" }
+
+// FakePayments reports whether the dev-only fake payment provider is on:
+// PAYMENTS_FAKE=1 and not production (Validate refuses that combination).
+func (c Config) FakePayments() bool { return c.PaymentsFake && !c.Production() }
 
 func Load() Config {
 	c := Config{
@@ -104,6 +112,7 @@ func Load() Config {
 	c.GoogleRedirectURL = env("GOOGLE_REDIRECT_URL", "")
 	c.PaymentsEncryptionKey = env("PAYMENTS_ENCRYPTION_KEY", "")
 	c.PaymentsEncryptionKeysOld = list(env("PAYMENTS_ENCRYPTION_KEYS_OLD", ""))
+	c.PaymentsFake = env("PAYMENTS_FAKE", "") == "1"
 	c.GoogleIssuer = strings.TrimRight(env("GOOGLE_ISSUER", "https://accounts.google.com"), "/")
 	c.Env = strings.ToLower(env("APP_ENV", "development"))
 	defFormat := "text"
@@ -169,6 +178,9 @@ func (c Config) Validate() error {
 	}
 	if c.CookieSameSite != "lax" && c.CookieSameSite != "strict" && c.CookieSameSite != "none" {
 		errs = append(errs, fmt.Errorf("COOKIE_SAMESITE must be lax, strict or none (got %q)", c.CookieSameSite))
+	}
+	if c.PaymentsFake {
+		errs = append(errs, errors.New("PAYMENTS_FAKE=1 is not allowed with APP_ENV=production (the fake payment provider is for development only)"))
 	}
 	if c.PaymentsEncryptionKey == "" {
 		errs = append(errs, errors.New("PAYMENTS_ENCRYPTION_KEY is required in production (32 bytes, base64 or hex: openssl rand -base64 32)"))

@@ -96,8 +96,8 @@ func TestPaymentProvidersFlow(t *testing.T) {
 
 	var list providersResp
 	do(t, h, "GET", "/api/v1/payments/providers", nil, tok).expect(200).json(&list)
-	// 4 = the three real providers plus the dev-only fake (not in production).
-	if !list.Available || len(list.Providers) != 4 || list.Providers[0].Provider != "xendit" || list.Providers[0].Configured {
+	// The dev-only fake provider is off unless PAYMENTS_FAKE=1.
+	if !list.Available || len(list.Providers) != 3 || list.Providers[0].Provider != "xendit" || list.Providers[0].Configured {
 		t.Fatalf("initial list = %+v", list)
 	}
 	if got := list.Providers[2].WebhookURL; got != "https://api.tautan.test/webhooks/stripe/"+pid {
@@ -263,7 +263,7 @@ func TestPaymentsUnavailableWithoutKey(t *testing.T) {
 	a := signup(t, h, "nokey")
 	var list providersResp
 	do(t, h, "GET", "/api/v1/payments/providers", nil, bearer(a.AccessToken)).expect(200).json(&list)
-	if list.Available || len(list.Providers) != 4 { // incl. the dev-only fake
+	if list.Available || len(list.Providers) != 3 {
 		t.Fatalf("list = %+v", list)
 	}
 	if c := do(t, h, "PUT", "/api/v1/payments/providers/stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_x"}, bearer(a.AccessToken)).expect(503).errCode(); c != "payments_unavailable" {

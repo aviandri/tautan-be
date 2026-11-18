@@ -36,7 +36,7 @@ type Server struct {
 	unlockLimiter   *rateLimiter
 	// Payments: nil sealer = PAYMENTS_ENCRYPTION_KEY unset, payments off.
 	sealer              *payments.Sealer
-	fake                *payments.FakeStore // dev-only "fake" provider; nil in production (provider off)
+	fake                *payments.FakeStore // dev-only "fake" provider; nil unless PAYMENTS_FAKE=1 outside production
 	providerTestLimiter *rateLimiter
 	orderLimiter        *rateLimiter
 	lookupLimiter       *rateLimiter
@@ -104,7 +104,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		log.Printf("payments disabled: %v", err)
 	}
 	s.sealer = sealer
-	if !cfg.Production() {
+	if cfg.FakePayments() { // PAYMENTS_FAKE=1 and not production
 		s.fake = payments.NewFakeStore()
 	}
 	// Run rejects a bad mail config first (MailConfig); fall back to the log driver here.

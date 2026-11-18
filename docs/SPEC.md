@@ -910,7 +910,8 @@ Gaps are skipped, and a non-numeric quantity is `invalid_quantity`. Shipping use
 weight-based shipping rates.
 
 #### Dev-only `fake` payment provider (for e2e without provider keys; migration 000023)
-- Offered only when `APP_ENV` isn't `production`. In production it isn't listed, `PUT /payments/providers/fake`,
+- Strictly opt-in: offered only with `PAYMENTS_FAKE=1` **and** `APP_ENV` not `production`. With `PAYMENTS_FAKE=1` and
+  `APP_ENV=production`, the API refuses to start. When it's off, the provider isn't listed, `PUT /payments/providers/fake`,
   its webhook and `/dev/fake-checkout/*` all answer 404, and the server refuses to build the adapter.
 - Sandbox only. `secret_key` is any string starting with `fake_`, with no webhook secret. It accepts IDR and USD.
 - The checkout URL is `{PUBLIC_BASE_URL}/dev/fake-checkout/{ref}` (ref `fk_…`). That page is served by the API, shows the
@@ -921,8 +922,8 @@ weight-based shipping rates.
 - Fake checkouts live in memory, so after an API restart, older fake orders stay pending.
 - Each fake checkout settles once. After Pay half (amount mismatch), that order stays pending for good, so start a new order
   to pay.
-- Any internet-facing deployment must run `APP_ENV=production` (docs/ENV.md). Otherwise a seller could turn on the fake
-  provider and give buyers free downloads.
+- Never set `PAYMENTS_FAKE` on an internet-facing box (docs/ENV.md). A seller who turned the provider on would give buyers
+  free downloads. Both compose files pin it to `"0"`.
 
 ## Performance budget for the public page `/[username]` (user requirement, 2026-11-16)
 

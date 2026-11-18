@@ -24,8 +24,36 @@ func fakeOrder(t *testing.T, fx shopFixture, email string) (createOrderResp, str
 	return o, u.Path
 }
 
-func TestFakeProviderFlow(t *testing.T) {
+// newFakeShop is newShop with PAYMENTS_FAKE=1 (development config).
+func newFakeShop(t *testing.T) shopFixture {
+	t.Helper()
 	fx := newShop(t)
+	fx.s.cfg.PaymentsFake = true
+	fx.s.fake = payments.NewFakeStore() // what New does when cfg.FakePayments()
+	fx.h = fx.s.Routes()
+	return fx
+}
+
+func TestFakeProviderOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		env  string
+		flag bool
+		want bool
+	}{{"development", false, false}, {"development", true, true}, {"production", true, false}} {
+		cfg := testConfig()
+		cfg.Env, cfg.PaymentsFake = tc.env, tc.flag
+		if got := New(cfg, testPool).fake != nil; got != tc.want {
+			t.Errorf("APP_ENV=%s PAYMENTS_FAKE=%v: fake provider on = %v", tc.env, tc.flag, got)
+		}
+	}
+	// Default dev server (no PAYMENTS_FAKE): not listed, not accepted.
+	fx := newShop(t)
+	do(t, fx.h, "PUT", "/api/v1/payments/providers/fake", map[string]any{"mode": "sandbox", "secret_key": "fake_x", "enabled": true}, bearer(fx.tok)).expect(404)
+	do(t, fx.h, "GET", "/dev/fake-checkout/fk_x", nil).expect(404)
+}
+
+func TestFakeProviderFlow(t *testing.T) {
+	fx := newFakeShop(t)
 	h := fx.h
 
 	var list struct {
@@ -113,6 +141,7 @@ func TestFakeProviderOffInProduction(t *testing.T) {
 	testutil.Truncate(t, testPool)
 	cfg := testConfig()
 	cfg.Env = "production"
+	cfg.PaymentsFake = true // the flag alone never turns it on in production (and Run refuses to start)
 	cfg.PaymentsEncryptionKey = testPaymentsKey
 	cfg.PublicBaseURL = "https://api.tautan.test"
 	s := New(cfg, testPool)
