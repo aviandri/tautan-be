@@ -250,7 +250,8 @@ func (s *Server) handlePollVote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vid := visitorID(in.VisitorID)
-	if !s.engageLimiter.Allow(clientIP(r)+"|"+vid+"|"+b.ID) || !s.engageIPLimiter.Allow(clientIP(r)+"|"+b.ID) {
+	// Per-IP ceiling first, so rotating visitor ids can't add keys past it (audit M1).
+	if !s.engageIPLimiter.Allow(clientIP(r)+"|"+b.ID) || !s.engageLimiter.Allow(clientIP(r)+"|"+vid+"|"+b.ID) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, try again later")
 		return
 	}
@@ -305,7 +306,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_question", "question is required (max 500 characters)")
 		return
 	}
-	if !s.askLimiter.Allow(clientIP(r)+"|"+visitorID(in.VisitorID)+"|"+pid) || !s.askIPLimiter.Allow(clientIP(r)+"|"+pid) {
+	if !s.askIPLimiter.Allow(clientIP(r)+"|"+pid) || !s.askLimiter.Allow(clientIP(r)+"|"+visitorID(in.VisitorID)+"|"+pid) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many questions, try again later")
 		return
 	}
