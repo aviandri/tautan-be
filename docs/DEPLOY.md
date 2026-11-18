@@ -7,7 +7,7 @@ Tautan's visitors are mostly in Indonesia and arrive on phones from bio links. T
 - The FE reads the API over the Docker network (`API_INTERNAL_URL`), so an uncached render never leaves the machine.
 - Cloudflare's Jakarta PoP terminates TLS near visitors and caches `/uploads` images at the edge.
 
-Every variable is documented in [ENV.md](ENV.md). This guide needs these PRs merged: tautan-be #29 (ops), #31 (proxy/cookies), #32 (storage) and #33 (image), and tautan-fe #63 (Docker).
+Every variable is documented in [ENV.md](ENV.md). It relies on tautan-be #29 (ops), #31 (proxy/cookies), #32 (storage) and #33 (image), and on tautan-fe #63 (Docker image).
 
 ```
 phone ──TLS──▶ Cloudflare (CGK/SIN edge, caches /uploads)
@@ -62,7 +62,7 @@ Trade-offs accepted with this choice:
 
 ### 1. Images on GHCR (public)
 
-1. Merge the PRs listed above. Each repo's `image` workflow then pushes `ghcr.io/aviandri/tautan-be` and `ghcr.io/aviandri/tautan-fe` with `latest` and `sha-xxxxxxx` tags. The workflows only build and push; they never deploy.
+1. Each repo's `image` workflow pushes on every merge to `main`: `ghcr.io/aviandri/tautan-be` and `ghcr.io/aviandri/tautan-fe` with `latest` and `sha-xxxxxxx` tags. The workflows only build and push; they never deploy.
 2. Set the tautan-fe repo variables (row 1 of the domain table) **before** the FE build you plan to deploy.
 3. **Manual step: make both packages public.** New GHCR packages are private, and a workflow's `GITHUB_TOKEN` can't change package visibility, so a repo admin does this once in the GitHub UI:
    1. Open the profile or org → **Packages** → `tautan-be` → **Package settings**.

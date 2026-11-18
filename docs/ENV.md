@@ -7,7 +7,7 @@ Every variable the two apps read, audited on 2026-11-18. Columns:
 - **Req (prod)**: ✅ must be set in production, ⚙️ set it for your topology, blank means optional.
 - **Secret**: 🔒 keep it out of git and logs; store it in the platform's secret store or the VPS `.env` (mode 600).
 - **Default**: the value used when the variable is unset or empty.
-- **Since**: the PR that added the variable: tautan-be #29 (ops) and #30 (Google sign-in) are merged; #31 (proxy/cookies) and #32 (storage) are in review. Everything unmarked has been on `main` longer.
+- **Since**: the tautan-be PR that added the variable: #29 (ops), #30 (Google sign-in), #31 (proxy/cookies), #32 (storage). Everything unmarked has been on `main` longer.
 
 ## API (tautan-be)
 
