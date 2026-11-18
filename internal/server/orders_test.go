@@ -869,3 +869,16 @@ func TestWebhookRateLimit(t *testing.T) {
 	}
 	do(t, fx.h, "POST", "/webhooks/stripe/"+fx.pid, `{}`).expect(429)
 }
+
+func upload(t *testing.T, fx shopFixture, kind string) string {
+	t.Helper()
+	req := multipartReq(t, "file", "Guide.pdf", []byte("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"), fx.tok)
+	req.URL.RawQuery = "kind=" + kind
+	rec := httptest.NewRecorder()
+	fx.h.ServeHTTP(rec, req)
+	var up struct {
+		URL string `json:"url"`
+	}
+	resp{rec, t}.expect(201).json(&up)
+	return up.URL
+}

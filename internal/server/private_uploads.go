@@ -125,6 +125,9 @@ func (s *Server) privatizeDeliverables(ctx context.Context, q execQueryRower, pi
 	case "file":
 		if m["price"] != nil {
 			err = fix(m, "url", "url")
+		} else if u, _ := m["url"].(string); privateNameRE.MatchString(s.uploadName(u)) {
+			// /uploads never serves private names, so a free download would 404.
+			err = ferr("url", "url: this file was uploaded privately for sale; upload it again to give it away for free")
 		}
 	case "product":
 		err = product(m, "")
