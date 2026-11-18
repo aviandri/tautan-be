@@ -31,6 +31,7 @@ List prices checked 2026-11-18, in USD, for launch-scale traffic (≈ 50k page v
 | R2 | Uploads + DB dumps; 10 GB free, then $0.015/GB, no egress fees | $0 at launch |
 | Cloudflare | Free plan: DNS, proxy, TLS edge, image caching | $0 |
 | GHCR | Public packages | $0 |
+| Resend | Email over SMTP; the free tier covers launch volume (verify the current limits) | $0 at launch |
 | **Total** | | **≈ $24–30** |
 
 Trade-offs accepted with this choice:
@@ -48,7 +49,7 @@ Trade-offs accepted with this choice:
 | 2 | **`deploy/.env`** on the VPS | `SITE_DOMAIN=<domain>`, `API_DOMAIN=api.<domain>` | `docker compose up -d`. This one setting drives the API's `PUBLIC_BASE_URL`, `APP_BASE_URL` and `CORS_ORIGINS` (via `docker-compose.prod.yml`) **and** Caddy's site addresses. |
 | 3 | **`deploy/Caddyfile`** | Nothing to edit: it reads `{$SITE_DOMAIN}` and `{$API_DOMAIN}` from #2. It also serves `www.<domain>` as a redirect. | With #2. |
 | 4 | **Cloudflare** | The zone for `<domain>`; DNS `@`, `www` and `api`; an Origin CA certificate for `<domain>, *.<domain>` saved in `deploy/certs/` | Immediately. |
-| 5 | **Email** | `MAIL_FROM=Tautan <hello@mail.<domain>>` in `deploy/.env`, plus SPF, DKIM and DMARC for `mail.<domain>` in Cloudflare | `docker compose up -d`. |
+| 5 | **Email (Resend)** | The Resend domain `mail.<domain>`; SPF, DKIM and DMARC records in Cloudflare; `MAIL_FROM=Tautan <hello@mail.<domain>>` in `deploy/.env` | `docker compose up -d`. |
 | 6 | **Google sign-in** (optional) | `GOOGLE_REDIRECT_URL=https://<domain>/auth/google/callback` in `deploy/.env`, and the same URL under *Authorised redirect URIs* in Google Cloud Console | `docker compose up -d`. |
 
 ⚠️ Choose the domain **before real users upload images**. Upload URLs are stored as absolute `https://<API_DOMAIN>/uploads/<name>`, so changing `API_DOMAIN` later breaks existing images unless the old hostname keeps pointing at the API.
@@ -135,15 +136,31 @@ The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=pro
    gunzip -c backups/tautan-<ts>.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U tautan -d tautan_restore
    ```
 
-### 6. Email (password resets, notifications)
+### 6. Email via Resend (password resets, notifications)
 
-Until this step `MAIL_DRIVER=log`: the API starts, but nothing is sent, and it logs a startup warning. Before launch:
-1. Pick a provider (e.g. Resend) and add the sending domain as a **subdomain**, `mail.<domain>`, which keeps the apex's reputation separate.
-2. In Cloudflare DNS, add the provider's **SPF** (TXT) and **DKIM** records for `mail.<domain>` as **DNS only** (grey cloud), plus a DMARC record: `TXT _dmarc.mail.<domain> "v=DMARC1; p=quarantine; rua=mailto:<you>"`.
-3. In `.env`, set `MAIL_DRIVER=smtp`, `MAIL_FROM=Tautan <hello@mail.<domain>>` and `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` and `SMTP_PASSWORD` (for Resend, the password is the API key). Then run `docker compose -f docker-compose.prod.yml up -d api`. Startup fails if `smtp` is missing a host or a valid from address.
-4. Most VPS providers (DigitalOcean included) block outbound port 25, so use 587 or 465. Both work.
+Decided: **Resend over SMTP**, sending from the `mail.<domain>` subdomain. Until this step `MAIL_DRIVER=log`: the API runs, but nothing is sent, and it logs a startup warning.
 
-Queued mail lives in Postgres (`email_outbox`), so a restart doesn't lose it.
+1. **Manual step: the user creates a Resend account** at resend.com. In **Domains → Add domain**, enter `mail.<domain>` and choose the region nearest Singapore/Asia if one is offered.
+2. Resend then shows the DNS records to add. In **Cloudflare DNS**, add them exactly as shown, all **DNS only** (grey cloud):
+   - the **SPF** TXT record (and the MX record for the bounce subdomain, if Resend lists one);
+   - the **DKIM** TXT record (`resend._domainkey.mail.<domain>`);
+   - **DMARC**, a TXT record at `_dmarc.mail.<domain>`: `v=DMARC1; p=quarantine; rua=mailto:<your inbox>`. Start with `p=none` for a week if you want to watch the reports first.
+
+   Click **Verify** in Resend; it usually turns green within minutes.
+3. In Resend, go to **API Keys → Create API key** with *Sending access* restricted to `mail.<domain>`. This key is the SMTP password, and Resend shows it only once.
+4. In `deploy/.env`, set:
+   ```
+   MAIL_DRIVER=smtp
+   MAIL_FROM=Tautan <hello@mail.<domain>>
+   SMTP_HOST=smtp.resend.com
+   SMTP_PORT=587
+   SMTP_USERNAME=resend
+   SMTP_PASSWORD=re_…            # the API key
+   ```
+   ⚠️ With `MAIL_DRIVER=smtp`, **`MAIL_FROM` must be a real address on the verified domain**. With the default `no-reply@localhost`, or a missing `SMTP_HOST`, the API refuses to start. Then run `docker compose -f docker-compose.prod.yml up -d api` and check the logs for the mail worker starting without errors.
+5. DigitalOcean (like most VPS providers) blocks outbound port 25, which is why this uses 587 (STARTTLS). 465 (implicit TLS) also works.
+
+Queued mail lives in Postgres (`email_outbox`), so a restart or a Resend outage delays mail without losing it.
 
 ### 7. Upgrades, rollback, operations
 
