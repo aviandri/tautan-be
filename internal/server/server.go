@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -33,10 +34,11 @@ type Server struct {
 	// InlineImages encodes image variants during the upload request (tests, seeding).
 	InlineImages bool
 	// Quiet disables per-request access logs (used by tests).
-	Quiet bool
-	cfg   config.Config
-	db    *pgxpool.Pool
-	now   func() time.Time
+	Quiet    bool
+	draining atomic.Bool
+	cfg      config.Config
+	db       *pgxpool.Pool
+	now      func() time.Time
 }
 
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
@@ -66,7 +68,7 @@ func (s *Server) Routes() http.Handler {
 		r.Use(middleware.RealIP)
 	}
 	if !s.Quiet {
-		r.Use(middleware.Logger)
+		r.Use(s.accessLog)
 	}
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -77,6 +79,8 @@ func (s *Server) Routes() http.Handler {
 		MaxAge:           600,
 	}))
 
+	r.Get("/livez", s.handleLive)
+	r.Get("/readyz", s.handleReady)
 	r.Get("/healthz", s.handleHealth)
 	r.Handle("/uploads/*", s.serveUploads())
 	r.Route("/api/v1", func(r chi.Router) {
