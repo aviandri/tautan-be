@@ -919,6 +919,10 @@ weight-based shipping rates.
   GetStatus, like Xendit and Midtrans, so the amount and currency checks apply. The buyer is then redirected to the
   order page (`&cancelled=1` after Fail or Expire).
 - Fake checkouts live in memory, so after an API restart, older fake orders stay pending.
+- Each fake checkout settles once. After Pay half (amount mismatch), that order stays pending for good, so start a new order
+  to pay.
+- Any internet-facing deployment must run `APP_ENV=production` (docs/ENV.md). Otherwise a seller could turn on the fake
+  provider and give buyers free downloads.
 
 ## Performance budget for the public page `/[username]` (user requirement, 2026-11-16)
 
