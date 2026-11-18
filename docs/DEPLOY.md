@@ -1,85 +1,80 @@
 # Deploying Tautan
 
-Tautan's users and their visitors are mostly in Indonesia, and nearly all visitors arrive on a phone from a bio link. The performance budget (SPEC.md) sets public-page **TTFB ≤ 200 ms cached / ≤ 600 ms uncached** and **LCP ≤ 1.8 s on Slow 4G**. Every option below therefore keeps compute and data in **Singapore or Jakarta**, with Cloudflare's Jakarta PoP (CGK) in front.
+**Production setup (decided 2026-11-18):** one **Singapore VPS** running [`deploy/docker-compose.prod.yml`](../deploy/docker-compose.prod.yml), with **Caddy** for TLS and routing, **Cloudflare** (Free) in front, and **Cloudflare R2** for uploads and offsite backups. Images are pulled from **public GHCR packages**. Other hosting options are summarised in the [appendix](#appendix-a-alternatives-considered).
 
-Every variable is documented in [ENV.md](ENV.md). This guide assumes these PRs are merged: tautan-be #29 (ops), #31 (proxy/cookies), #32 (storage) and #33 (image), and tautan-fe #63 (Docker/Vercel).
+Tautan's visitors are mostly in Indonesia and arrive on phones from bio links. The SPEC.md budget is public-page **TTFB ≤ 200 ms cached / ≤ 600 ms uncached** and **LCP ≤ 1.8 s on Slow 4G**. This setup meets it with the following design:
+- FE, API and Postgres share one box in Singapore, about 15 ms from Jakarta.
+- The FE reads the API over the Docker network (`API_INTERNAL_URL`), so an uncached render never leaves the machine.
+- Cloudflare's Jakarta PoP terminates TLS near visitors and caches `/uploads` images at the edge.
 
-## Latency, in brief
+Every variable is documented in [ENV.md](ENV.md). This guide needs these PRs merged: tautan-be #29 (ops), #31 (proxy/cookies), #32 (storage) and #33 (image), and tautan-fe #63 (Docker).
 
-| Path | Typical RTT |
-|---|---|
-| Jakarta phone → Cloudflare/Vercel edge in Jakarta or Singapore | 5–20 ms (plus 4G radio, 50–150 ms) |
-| Jakarta ↔ Singapore data centre | 12–20 ms |
-| Jakarta ↔ Tokyo | ~70 ms |
-| Jakarta ↔ US East (Vercel's default `iad1`) | 230+ ms |
+```
+phone ──TLS──▶ Cloudflare (CGK/SIN edge, caches /uploads)
+                   │  proxied, Full (strict), Origin CA cert
+                   ▼
+            VPS (Singapore) ── Caddy :443 ──┬──▶ fe:3000  (Next standalone, ISR cache on disk)
+                                            │        │ API_INTERNAL_URL=http://api:8080
+                                            └──▶ api:8080 (Go) ──▶ db:5432 (Postgres 17)
+                                                     │                 └─ backup (nightly pg_dump → ./backups → R2)
+                                                     └──▶ R2 bucket (uploads + variants, STORAGE=s3)
+```
 
-The rule that follows: **FE functions, API and Postgres must sit in the same region.** An uncached `/[username]` render makes FE → API → DB round trips. Across an ocean that alone uses up the 600 ms budget. Each tautan-fe `vercel.json` therefore pins `sin1`.
+## Monthly cost
 
-## Options
-
-Prices are list prices checked on 2026-11-18, in USD per month for launch-scale traffic (≈ 50k page views a month, < 10 GB of uploads). Verify them before committing; PaaS pricing changes often. Fly.io raised RAM to $6/GB-month in Oct 2026, and Neon now bills per CU-hour.
-
-### A. Managed: Vercel (FE) + Fly.io (API) + Neon (Postgres) + Cloudflare R2
-
-| Piece | Choice | Cost |
-|---|---|---|
-| FE | Vercel **Pro** (Hobby forbids commercial use), functions in `sin1` | $20 per member, plus usage beyond the included quota |
-| API | Fly.io, region `sin`, 2 × shared-cpu-1x / 1 GB (AVIF encoding wants RAM) | ≈ $10–14 |
-| DB | Neon Launch, `aws-ap-southeast-1` (Singapore), 0.25–0.5 CU **always on** | ≈ $20–40 (0.25 CU × 730 h × $0.106 ≈ $19, plus storage) |
-| Uploads | Cloudflare R2 (`STORAGE=s3`), free egress | $0 under 10 GB, then $0.015/GB |
-| DNS/CDN | Cloudflare Free, proxying `api.` for CF-IPCountry and edge caching of `/uploads` | $0 |
-| **Total** | | **≈ $50–75** |
-
-- **Pros:** no servers to patch. Neon runs backups and point-in-time recovery. Vercel edge-caches ISR pages, and `revalidateTag` purges them globally. Fly runs zero-downtime rolling deploys with `release_command`. Everything scales horizontally.
-- **Cons:** four vendors and four bills. Neon's scale-to-zero adds a ~0.5 s cold start to the first query, so keep production always-on (that's what costs money). The API runs N instances, and its in-memory state is per instance: rate limits allow N× the configured rate, and each instance has its own image-encoding queue (harmless). Vercel's bandwidth and function overage can surprise you on a viral page.
-
-### B. One VPS: docker-compose behind Caddy, Cloudflare in front (recommended)
+List prices checked 2026-11-18, in USD, for launch-scale traffic (≈ 50k page views a month, < 10 GB of uploads):
 
 | Piece | Choice | Cost |
 |---|---|---|
-| VPS | 2 vCPU / 4 GB / 80 GB SSD in **Singapore** (DigitalOcean SGP1, Vultr, Linode, AWS Lightsail), or **Jakarta** (Biznet Gio, IDCloudHost, Tencent Cloud Jakarta) | ≈ $24 (DO SGP1); Jakarta locals ≈ IDR 150–350k (≈ $10–22) |
-| Everything else | Caddy, FE, API, Postgres 17 and the nightly backup, all in [`deploy/docker-compose.prod.yml`](../deploy/docker-compose.prod.yml) | $0 |
-| Uploads + offsite backups | Cloudflare R2 | $0 under 10 GB |
-| DNS/CDN/TLS edge | Cloudflare Free (proxied, Origin CA cert) | $0 |
-| Optional | Provider snapshots/backups (DO: +20%) | ≈ $5 |
-| **Total** | | **≈ $15–30** |
+| VPS | DigitalOcean SGP1, 2 vCPU / 4 GB / 80 GB (or Vultr, Linode or Lightsail in Singapore) | ≈ $24 |
+| Snapshots | Provider weekly backups (DO: +20%) | ≈ $5 (optional) |
+| R2 | Uploads + DB dumps; 10 GB free, then $0.015/GB, no egress fees | $0 at launch |
+| Cloudflare | Free plan: DNS, proxy, TLS edge, image caching | $0 |
+| GHCR | Public packages | $0 |
+| **Total** | | **≈ $24–30** |
 
-- **Pros:** cheapest by 2–3×. FE → API → DB hops are on localhost; with `API_INTERNAL_URL` the uncached render never leaves the box, which gives the best uncached TTFB of all three options. Cloudflare's Jakarta PoP terminates TLS close to visitors. One bill, one place to look, and no vendor-specific config. It moves to option A piece by piece later, because nothing here is VPS-specific: S3 storage, a stateless API and the standalone FE image all carry over.
-- **Cons:** a single point of failure. A VPS reboot means ~1 min of downtime, and a deploy means a few seconds while containers restart. You own OS patching, Postgres tuning and backup restores (practise once). Vertical scaling only until you split it out. ISR pages are cached on the box, not at Cloudflare's edge, but the FE serves them from disk in a few ms.
+Trade-offs accepted with this choice:
+- It's a single point of failure: a reboot means about 1 min down, and a deploy means a few seconds of 502s.
+- We own OS patching and backup restores.
+- It scales vertically only. The [appendix](#appendix-a-alternatives-considered) says when to move to managed services; nothing in the code is VPS-specific.
 
-### C. Vercel (FE) + Railway (API + Postgres), both in Singapore
+## Where the domain is set
 
-| Piece | Choice | Cost |
-|---|---|---|
-| FE | Vercel Pro, `sin1` | $20 |
-| API + DB | Railway (Pro for production: $20 including $20 usage), region Singapore, API service plus a Postgres service with a volume | ≈ $20–35 |
-| Uploads | R2 | $0 |
-| **Total** | | **≈ $40–55** |
+**There's no production domain yet.** Everything ships with the placeholder `tautan.id` / `api.tautan.id`. Once a domain is chosen, change it in **all** of these places:
 
-- **Pros:** the simplest managed setup. Railway deploys straight from the GHCR image or the repo, and API and DB share a private network. One fewer vendor than A.
-- **Cons:** Railway Postgres is a container with a volume, not a managed HA database, so backups are your job (use `deploy/backup.sh` as a cron service). Usage-based billing is harder to predict. Fewer regions.
+| # | Where | What to set | Takes effect |
+|---|---|---|---|
+| 1 | **tautan-fe repo variables** (*Settings → Secrets and variables → Actions → Variables*) | `NEXT_PUBLIC_API_URL=https://api.<domain>`, `NEXT_PUBLIC_SITE_URL=https://<domain>`, `NEXT_PUBLIC_SITE_HOST=<domain>` | The next FE image build. These are **baked into the JS bundle**, so re-run the `image` workflow, then pull. Unset variables fall back to the `tautan.id` placeholders (in `.github/workflows/image.yml`). |
+| 2 | **`deploy/.env`** on the VPS | `SITE_DOMAIN=<domain>`, `API_DOMAIN=api.<domain>` | `docker compose up -d`. This one setting drives the API's `PUBLIC_BASE_URL`, `APP_BASE_URL` and `CORS_ORIGINS` (via `docker-compose.prod.yml`) **and** Caddy's site addresses. |
+| 3 | **`deploy/Caddyfile`** | Nothing to edit: it reads `{$SITE_DOMAIN}` and `{$API_DOMAIN}` from #2. It also serves `www.<domain>` as a redirect. | With #2. |
+| 4 | **Cloudflare** | The zone for `<domain>`; DNS `@`, `www` and `api`; an Origin CA certificate for `<domain>, *.<domain>` saved in `deploy/certs/` | Immediately. |
+| 5 | **Google sign-in** (optional) | `GOOGLE_REDIRECT_URL=https://<domain>/auth/google/callback` in `deploy/.env`, and the same URL under *Authorised redirect URIs* in Google Cloud Console | `docker compose up -d`. |
 
-### Recommendation
+⚠️ Choose the domain **before real users upload images**. Upload URLs are stored as absolute `https://<API_DOMAIN>/uploads/<name>`, so changing `API_DOMAIN` later breaks existing images unless the old hostname keeps pointing at the API.
 
-**Start on B (one Singapore VPS, ideally DigitalOcean SGP1 2 vCPU/4 GB, behind Cloudflare, with R2 for uploads and offsite backups).** At launch scale it's the cheapest, it's the fastest for uncached pages, and it has the fewest moving parts. Move to **A** when one of these becomes true: you need more than one API instance, a single box can't take the AVIF encoding load, or downtime during a reboot becomes unacceptable. Take a Jakarta provider instead of Singapore only if it offers snapshots and an API you trust. It saves ~10 ms per round trip, but Cloudflare already terminates TLS in Jakarta.
-
-## Step by step: option B
+## Step by step
 
 ### 0. Prerequisites
 
-- A domain (e.g. `tautan.id`) on a Cloudflare account (Free plan).
-- A GitHub account with access to both repos, and an SSH key.
+- A domain on a Cloudflare account (Free plan). You can rehearse with any domain you own and switch later; see the warning above.
+- Admin access to both GitHub repos, and an SSH key.
 - About an hour.
 
-### 1. Images
+### 1. Images on GHCR (public)
 
-1. Merge the PRs listed above. Each repo's `image` workflow then pushes `ghcr.io/aviandri/tautan-be` and `ghcr.io/aviandri/tautan-fe` with `latest` and `sha-xxxxxxx` tags.
-2. **Before the FE builds on `main`**, set repository variables in tautan-fe (*Settings → Secrets and variables → Actions → Variables*): `NEXT_PUBLIC_API_URL=https://api.tautan.id`, `NEXT_PUBLIC_SITE_URL=https://tautan.id` and `NEXT_PUBLIC_SITE_HOST=tautan.id`. They're baked into the bundle; re-run the workflow if you change them.
-3. GHCR packages start private. Either make both packages public (*Package settings → Change visibility*), or create a classic PAT with only `read:packages` and run `docker login ghcr.io -u <user>` on the VPS.
+1. Merge the PRs listed above. Each repo's `image` workflow then pushes `ghcr.io/aviandri/tautan-be` and `ghcr.io/aviandri/tautan-fe` with `latest` and `sha-xxxxxxx` tags. The workflows only build and push; they never deploy.
+2. Set the tautan-fe repo variables (row 1 of the domain table) **before** the FE build you plan to deploy.
+3. **Manual step: make both packages public.** New GHCR packages are private, and a workflow's `GITHUB_TOKEN` can't change package visibility, so a repo admin does this once in the GitHub UI:
+   1. Open the profile or org → **Packages** → `tautan-be` → **Package settings**.
+   2. Under **Danger Zone → Change package visibility**, choose **Public** and type the package name to confirm.
+   3. Repeat for `tautan-fe`.
+   4. In each package's settings, check under **Manage Actions access** that the source repo has **Write** access, so later workflow runs can keep pushing. It's granted automatically when the workflow created the package.
+
+   Check from any machine, with no login: `docker pull ghcr.io/aviandri/tautan-be:latest` should succeed. The VPS then pulls without a token. The images contain no secrets: all configuration is runtime env, apart from the public `NEXT_PUBLIC_*` URLs.
 
 ### 2. VPS
 
-1. Create an Ubuntu 24.04 LTS droplet: 2 vCPU / 4 GB, region SGP1, your SSH key, backups optional.
+1. Create an Ubuntu 24.04 LTS droplet: 2 vCPU / 4 GB, region **SGP1**, your SSH key, weekly backups optional.
 2. Harden it and install Docker:
    ```sh
    adduser deploy && usermod -aG sudo deploy && rsync -a ~/.ssh /home/deploy/ && chown -R deploy: /home/deploy/.ssh
@@ -88,16 +83,16 @@ Prices are list prices checked on 2026-11-18, in USD per month for launch-scale 
    ufw allow OpenSSH && ufw allow 80,443/tcp && ufw allow 443/udp && ufw enable
    curl -fsSL https://get.docker.com | sh && usermod -aG docker deploy
    ```
-   Optional, and stricter: allow 80/443 only from [Cloudflare's ranges](https://www.cloudflare.com/ips/), so nobody can bypass the proxy. Docker publishes ports past ufw, so do it in the provider's cloud firewall (DO: *Networking → Firewalls*).
+3. Recommended: in the provider's cloud firewall (DO: *Networking → Firewalls*), allow 80/443 **only from [Cloudflare's ranges](https://www.cloudflare.com/ips/)**, plus 22 from your IP. Docker-published ports bypass ufw, so the cloud firewall is the reliable place for this. Nobody can then reach the origin around Cloudflare.
 
 ### 3. Cloudflare
 
 1. **DNS:** add `A @`, `A www` and `A api` records pointing at the VPS IP, all **Proxied** (orange cloud).
 2. **SSL/TLS → Overview:** **Full (strict)**. **Edge Certificates:** turn on *Always Use HTTPS*, set minimum TLS 1.2, and enable HTTP/3.
-3. **SSL/TLS → Origin Server → Create certificate:** RSA, hostnames `tautan.id, *.tautan.id`, 15 years. Save the certificate as `deploy/certs/origin.pem` and the key as `deploy/certs/origin-key.pem` on the VPS (step 4).
-4. **Caching:** keep the defaults. Cloudflare caches `/uploads/*.png|jpg|webp|avif` by extension, with the query string (`?w=`) in the key, and API responses are already `immutable`. **Never** add a "Cache Everything" rule on `api.`, because auth and editor responses must not be cached.
-   - Cloudflare ignores `Vary: Accept` on images on the Free plan, so the first format it caches for a `?w=` URL is served to everyone. Every browser in tautan-fe's `browserslist` (Chrome/Edge/Firefox 111+, Safari 16.4+) decodes AVIF, so this is safe for supported browsers. If you need strict negotiation, add a Cache Rule: hostname `api.tautan.id` AND URI path starts with `/uploads/` AND query contains `w=` → *Bypass cache*. Origin serving is cheap.
-5. Optional: under **Security → WAF → Rate limiting rules**, add 1 rule on `api.tautan.id/api/v1/auth/*` (login brute force). The API also rate-limits public endpoints itself.
+3. **SSL/TLS → Origin Server → Create certificate:** RSA, hostnames `<domain>, *.<domain>`, 15 years. On the VPS (step 4), save the certificate as `deploy/certs/origin.pem` and the key as `deploy/certs/origin-key.pem`. We use the Origin CA rather than Let's Encrypt because ACME HTTP-01 fails behind Cloudflare once *Always Use HTTPS* is on.
+4. **Caching:** keep the defaults. Cloudflare caches `/uploads/*.png|jpg|webp|avif` by extension, with the query string (`?w=`) in the key, and the API marks them `immutable`. **Never** add a "Cache Everything" rule on `api.`, because auth and editor responses must not be cached.
+   - Cloudflare's Free plan ignores `Vary: Accept` on images, so the first format cached for a `?w=` URL is served to everyone. Every browser in tautan-fe's `browserslist` (Chrome/Edge/Firefox 111+, Safari 16.4+) decodes AVIF, so this is fine. For strict negotiation, add a Cache Rule: host `api.<domain>` AND path starts with `/uploads/` AND query contains `w=` → *Bypass cache*.
+5. Optional: under **Security → WAF → Rate limiting rules**, add 1 rule on `api.<domain>/api/v1/auth/*` (login brute force). The API rate-limits public endpoints itself.
 
 ### 4. Configure and start
 
@@ -108,106 +103,114 @@ mkdir -p certs backups && chmod 700 certs
 $EDITOR certs/origin.pem certs/origin-key.pem       # paste from Cloudflare
 cp .env.example .env && chmod 600 .env
 for v in POSTGRES_PASSWORD JWT_SECRET REVALIDATE_SECRET; do sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env; done
-$EDITOR .env                                         # SITE_DOMAIN, API_DOMAIN, tags, R2 (step 5)
-docker compose -f docker-compose.prod.yml up -d
-docker compose -f docker-compose.prod.yml ps        # all healthy within ~30 s
-docker compose -f docker-compose.prod.yml logs -f api   # JSON logs; "migrations applied", "tautan api listening"
+$EDITOR .env                                         # SITE_DOMAIN, API_DOMAIN, image tags, R2 (step 5)
+docker compose -f docker-compose.prod.yml up -d      # pulls the public images; no docker login needed
+docker compose -f docker-compose.prod.yml ps         # all healthy within ~30 s
+docker compose -f docker-compose.prod.yml logs -f api   # JSON logs: "migrations applied", "tautan api listening"
 ```
 
-The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=production` it refuses to start on unsafe config and logs exactly which variable is wrong.
+The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=production` it refuses to start on unsafe config and logs which variable is wrong. `.env` is the only file holding secrets; back it up somewhere safe, such as a password manager.
 
-### 5. Cloudflare R2 for uploads and offsite backups (recommended)
+### 5. R2 for uploads and offsite backups
 
-1. **R2 → Create bucket:** `tautan-uploads`, location hint *Asia-Pacific*. Create a second bucket, `tautan-backups`.
+1. **R2 → Create bucket:** `tautan-uploads`, location hint *Asia-Pacific*. Create a second bucket, `tautan-backups`. Both stay private.
 2. **R2 → Manage API tokens → Create:** *Object Read & Write*, scoped to those two buckets. Note the Access Key ID, the Secret and the S3 endpoint (`https://<account-id>.r2.cloudflarestorage.com`).
-3. In `.env`, set `STORAGE=s3`, `S3_BUCKET=tautan-uploads`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, then run `docker compose -f docker-compose.prod.yml up -d api`. The API still serves `/uploads/*` itself, so URLs don't change. Leave the bucket private.
-4. If you already have local uploads, copy them over once, before switching:
+3. In `.env`, set `STORAGE=s3`, `S3_BUCKET=tautan-uploads`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY`, then run `docker compose -f docker-compose.prod.yml up -d api`. The API still serves `/uploads/*` itself, so URLs don't change. Do this **before launch**, so local disk never holds production uploads.
+4. If uploads already exist on the local volume, copy them once, then switch:
    ```sh
    docker run --rm -v tautan_uploads:/data:ro -e RCLONE_CONFIG_R2_TYPE=s3 -e RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
      -e RCLONE_CONFIG_R2_ACCESS_KEY_ID=… -e RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=… -e RCLONE_CONFIG_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com \
      rclone/rclone copy /data r2:tautan-uploads/uploads --exclude '.*'
    ```
-5. **Backups.** The `backup` service writes a gzip `pg_dump` to `/opt/tautan/backups` every 24 h and keeps 14. Ship them offsite with a host cron entry (`crontab -e`):
+5. **Backups.** The `backup` service writes a gzip `pg_dump` to `/opt/tautan/backups` every 24 h and keeps the newest 14. Ship them offsite with a host cron entry (`crontab -e`):
    ```
    30 3 * * * docker run --rm -v /opt/tautan/backups:/b:ro --env-file /opt/tautan/rclone.env rclone/rclone copy /b r2:tautan-backups/db
    ```
-   `rclone.env` holds the same `RCLONE_CONFIG_R2_*` lines as above (mode 600). Add an R2 lifecycle rule on `tautan-backups` to expire objects after 30 days.
-6. **Restore drill** (do it once):
+   `rclone.env` (mode 600) holds the same `RCLONE_CONFIG_R2_*` lines as above. Add an R2 lifecycle rule on `tautan-backups` that expires objects after 30 days.
+6. **Restore drill** (do it once before launch):
    ```sh
+   docker compose -f docker-compose.prod.yml exec db createdb -U tautan tautan_restore
    gunzip -c backups/tautan-<ts>.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U tautan -d tautan_restore
    ```
-   Create `tautan_restore` first with `createdb`.
 
 ### 6. Upgrades, rollback, operations
 
-- **Upgrade:** pin `TAUTAN_BE_TAG` and `TAUTAN_FE_TAG` to the new `sha-xxxxxxx` tags in `.env`, then run `docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d`. On SIGTERM the API fails `/readyz`, waits `SHUTDOWN_DELAY`, drains requests and flushes pending revalidations. Caddy health-checks `/readyz`. Expect a few seconds of 502s while a container restarts; zero-downtime needs two API instances (option A).
-- **Rollback:** put the previous sha tags back and run `up -d`. Migrations only move forward. If a release added a migration, check that the old code tolerates the new schema (our migrations are additive) before rolling back.
+- **Upgrade:** set `TAUTAN_BE_TAG` and `TAUTAN_FE_TAG` in `.env` to the new `sha-xxxxxxx` tags (shown on each package's GHCR page), then run `docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d`. On SIGTERM the API fails `/readyz`, waits `SHUTDOWN_DELAY`, drains requests and flushes pending page revalidations. Expect a few seconds of 502s while a container restarts.
+- **Rollback:** put the previous sha tags back, then run `up -d`. Migrations only move forward, and ours are additive, so older code tolerates a newer schema. Check the release notes if a migration dropped anything.
 - **Monitoring:**
-  - An external uptime check (Better Stack, UptimeRobot or Cloudflare Health Checks) on `https://api.tautan.id/readyz` and `https://tautan.id/`.
-  - `docker compose logs` for JSON logs; 5xx are logged at `ERROR`.
-  - Disk: `df -h` and `docker system df`, and prune old images monthly with `docker image prune -a --filter until=720h`.
-- **Postgres:** the defaults are fine for 4 GB. To tune, add `command: postgres -c shared_buffers=512MB -c effective_cache_size=2GB` to the `db` service.
-
-## Notes for option A (when you outgrow the VPS)
-
-- **Fly (API):**
-  - In `fly.toml`, set `primary_region = "sin"` and `[deploy] release_command = "/api migrate"`, and set `MIGRATE_ON_START=false`.
-  - Add `[[http_service.checks]] path = "/readyz"` and `kill_timeout = "30s"`, and set `SHUTDOWN_DELAY=5s`.
-  - Env: `TRUSTED_PROXIES=private,cloudflare`, with Cloudflare proxying `api.` for CF-IPCountry. Without Cloudflare, use `CLIENT_IP_HEADER=Fly-Client-IP` and `TRUSTED_PROXIES=private`, and country stays blank.
-  - Set `STORAGE=s3` (Fly volumes are per machine).
-  - Deploy from the GHCR image: `fly deploy --image ghcr.io/aviandri/tautan-be:sha-…`.
-- **Neon:**
-  - Create the project in `aws-ap-southeast-1`; the region can't be changed later.
-  - Use the **direct** connection string for `DATABASE_URL`. golang-migrate's advisory lock doesn't work through a transaction pooler, and pgx pools on its own anyway.
-  - Turn off scale-to-zero for the production branch.
-- **Vercel (FE):**
-  - `vercel.json` already pins `sin1`.
-  - Set `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_SITE_HOST` and `REVALIDATE_SECRET` in project env.
-  - On the API side, set `REVALIDATE_URL=https://tautan.id/api/revalidate` (the default from `APP_BASE_URL`).
-  - Vercel's own `X-Vercel-IP-Country` only applies to requests that hit Vercel. Visitor analytics events go browser → API, so country still comes from Cloudflare on `api.`.
-- **Cookies:** with FE `tautan.id` and API `api.tautan.id` (same site), `COOKIE_SAMESITE=lax` works everywhere. Don't use a `*.vercel.app` FE against a `*.fly.dev` API in production: that's cross-site, and Safari blocks the refresh cookie.
-
-## Data residency
-
-Indonesia's PDP Law (UU 27/2022) and PP 71/2019 generally allow private-sector platforms to store personal data abroad, Singapore included, provided the transfer safeguards are met. Tautan stores creator accounts, form submissions and subscriber emails. Check with counsel before launch; if you need in-country hosting, run option B on a Jakarta VPS.
+  - An external uptime check (Better Stack, UptimeRobot or Cloudflare Health Checks) on `https://api.<domain>/readyz` and `https://<domain>/`.
+  - `docker compose logs` for JSON logs; 5xx responses are logged at `ERROR`.
+  - Disk: `df -h` and `docker system df`. Prune old images monthly with `docker image prune -a --filter until=720h`.
+- **Postgres:** the defaults are fine on 4 GB. To tune, add `command: postgres -c shared_buffers=512MB -c effective_cache_size=2GB` to the `db` service.
+- **Run one FE container only:** the ISR cache lives inside it.
 
 ## Smoke-test checklist (after every deploy)
 
-Run from a phone on mobile data where noted. ☐ = pass/fail.
+Replace `<domain>` with the real one. Run from a phone on mobile data where noted. ☐ = pass/fail.
 
 **Infrastructure**
-- ☐ `curl -s https://api.tautan.id/livez` → `{"status":"ok"}`, and `/readyz` → 200.
-- ☐ `curl -sI https://tautan.id/` → 200 with `server: cloudflare` and `cf-ray` present. `curl -sI http://tautan.id/` → 301 to https.
-- ☐ `docker compose ps`: every service is `healthy` or `running`, and the API logs contain no `ERROR` in the first minute.
-- ☐ The API log line for a request shows `"ip"` as your real public IP, not a Cloudflare or Docker IP.
+- ☐ `docker pull ghcr.io/aviandri/tautan-fe:latest` works with no login (packages are public).
+- ☐ `curl -s https://api.<domain>/livez` → `{"status":"ok"}`, and `/readyz` → 200.
+- ☐ `curl -sI https://<domain>/` → 200 with `server: cloudflare` and `cf-ray` present. `curl -sI http://<domain>/` → 301 to https, and `https://www.<domain>/` → 301 to the apex.
+- ☐ `docker compose ps`: every service is `healthy` or `running`, and the API logs have no `ERROR` in the first minute.
+- ☐ The API log line for your request shows `"ip"` as your real public IP, not a Cloudflare or Docker address.
 
 **Auth and cookies**
-- ☐ Sign up on `https://tautan.id/signup` and land on the dashboard.
-- ☐ DevTools → Application → Cookies → `api.tautan.id`: `tautan_refresh` is `HttpOnly`, `Secure`, `SameSite=Lax`, path `/api/v1/auth`.
-- ☐ Reload the dashboard (the access token lives in memory, so a reload forces `POST /auth/refresh`): you stay logged in. Test in **Safari on iOS** too.
+- ☐ Sign up at `https://<domain>/signup` and land on the dashboard.
+- ☐ DevTools → Application → Cookies → `api.<domain>`: `tautan_refresh` is `HttpOnly`, `Secure`, `SameSite=Lax`, path `/api/v1/auth`.
+- ☐ Reload the dashboard (the access token is in memory, so a reload forces `POST /auth/refresh`): you stay logged in. Test **Safari on iOS** too.
 - ☐ Log out, then reload: you're logged out.
 - ☐ (If configured) Google sign-in round trip works.
 
 **Editor → public page (ISR + revalidate)**
-- ☐ Publish a page with a link block and an image block. Open `https://tautan.id/<username>`; it renders.
-- ☐ Edit the link title in the dashboard; within ~2 s a reload of the public page shows the change. The API logs show no `revalidate … status` errors. A 60 s delay means the revalidate webhook is broken: check `REVALIDATE_SECRET` on both sides.
+- ☐ Publish a page with a link block and an image block. `https://<domain>/<username>` renders.
+- ☐ Edit the link title; within ~2 s a reload of the public page shows it, and the API logs show no `revalidate … status` errors. If it takes ~60 s, the webhook is broken: check that `REVALIDATE_SECRET` reaches both containers.
 - ☐ Rename the username: the old URL 301s to the new one.
-- ☐ `curl -sI https://api.tautan.id/api/v1/public/<username>` shows `etag` and `cache-control: public, s-maxage=60, stale-while-revalidate=600`. Repeating with `-H 'If-None-Match: <etag>'` → 304.
+- ☐ `curl -sI https://api.<domain>/api/v1/public/<username>` shows `etag` and `cache-control: public, s-maxage=60, stale-while-revalidate=600`. Repeating with `-H 'If-None-Match: <etag>'` → 304.
 
 **Uploads and images**
 - ☐ Upload a JPEG avatar; it shows at once.
-- ☐ After ~5 s, `curl -sI -H 'Accept: image/avif' 'https://api.tautan.id/uploads/<name>.jpg?w=320'` → `content-type: image/avif`, `cache-control: …immutable`. A second request shows `cf-cache-status: HIT`.
-- ☐ With `STORAGE=s3`: the object and its `.w160/.w320…` variants appear in the R2 bucket under `uploads/`.
-- ☐ Upload a PDF through a file block; the download works, and a 25 MB file uploads over mobile data.
+- ☐ After ~5 s, `curl -sI -H 'Accept: image/avif' 'https://api.<domain>/uploads/<name>.jpg?w=320'` → `content-type: image/avif` and `cache-control: …immutable`. A second request shows `cf-cache-status: HIT`.
+- ☐ The object and its `.w160/.w320…` variants are in the R2 bucket under `uploads/`, and `docker compose exec api ls /data/uploads` is empty.
+- ☐ Upload a PDF in a file block; the download works, and a 25 MB file uploads over mobile data.
 
 **Analytics**
-- ☐ Open the public page from a phone on mobile data and click a link. Dashboard → Analytics shows the view and the click, with country **ID** (proves CF-IPCountry plus trusted proxies).
-- ☐ Spoofing check, bypassing Cloudflare: `curl -k --resolve api.tautan.id:443:<vps-ip> -X POST -H 'CF-IPCountry: US' -A 'Mozilla/5.0' -d '{"kind":"view"}' https://api.tautan.id/api/v1/public/<username>/events` → 204, but analytics shows the view with **no** country, not US. (Skip this if the cloud firewall only admits Cloudflare: the connection is refused, which is even better.)
+- ☐ From a phone on mobile data, open the public page and click a link. Analytics shows the view and the click with country **ID** (proves CF-IPCountry and the trusted proxies work).
+- ☐ Spoofing check, bypassing Cloudflare: `curl -k --resolve api.<domain>:443:<vps-ip> -X POST -H 'CF-IPCountry: US' -A 'Mozilla/5.0' -d '{"kind":"view"}' https://api.<domain>/api/v1/public/<username>/events`. With the Cloudflare-only firewall the connection is refused (best). Otherwise expect a 204, with the view recorded **without** a country, not US.
 
-**Performance (budget in SPEC.md)**
-- ☐ PageSpeed Insights (mobile) on `https://tautan.id/<username>`: Performance ≥ 90, LCP ≤ 1.8 s, CLS ≤ 0.05.
-- ☐ `curl -so /dev/null -w '%{time_starttransfer}\n' https://tautan.id/<username>` from an Indonesian vantage point (or a Jakarta VPS) → ≤ 0.2 s when warm.
+**Performance (SPEC.md budget)**
+- ☐ PageSpeed Insights (mobile) on `https://<domain>/<username>`: Performance ≥ 90, LCP ≤ 1.8 s, CLS ≤ 0.05.
+- ☐ `curl -so /dev/null -w '%{time_starttransfer}\n' https://<domain>/<username>` from an Indonesian vantage point → ≤ 0.2 s when warm.
 
 **Operations**
-- ☐ `ls backups/` shows a dump from the last 24 h, and the R2 `tautan-backups` bucket has it after the cron run.
-- ☐ `docker compose restart api` while running a `curl` loop against `/readyz`: at most a few seconds of 502/503, then 200.
+- ☐ `ls backups/` shows a dump less than 24 h old, and R2 `tautan-backups/db` has it after the cron run.
+- ☐ `docker compose restart api` during a `curl` loop on `/readyz`: at most a few seconds of 502/503, then 200.
+
+---
+
+## Appendix A: alternatives considered
+
+Both alternatives cost 2–3× more at launch. Revisit them when one of these becomes true: you need more than one API instance, a single box can't keep up with AVIF encoding, or reboot downtime becomes unacceptable. The code already supports them: S3 storage, a stateless API, and an FE that builds for Vercel.
+
+| Option | Pieces | ≈ USD/month | Why not now |
+|---|---|---|---|
+| **Managed** | Vercel Pro (`sin1`, which `vercel.json` already pins) + Fly.io `sin` (2 × shared-cpu-1x/1 GB) + Neon Launch `aws-ap-southeast-1` (always on) + R2 | $50–75 | Four vendors and bills. Neon needs scale-to-zero off (≈ $19+/mo for 0.25 CU). The API's in-memory rate limits multiply per instance. Vercel Hobby forbids commercial use. |
+| **Vercel + Railway** | Vercel Pro + Railway Pro (API + Postgres container) in Singapore + R2 | $40–55 | Postgres is a container with a volume (no managed HA or PITR), so we'd still run backups. Usage billing is harder to predict. |
+
+Notes for moving to the managed option later:
+- **Fly:** `primary_region = "sin"`, `[deploy] release_command = "/api migrate"` with `MIGRATE_ON_START=false`, an http check on `/readyz`, `kill_timeout = "30s"` and `SHUTDOWN_DELAY=5s`. Keep Cloudflare proxying `api.` with `TRUSTED_PROXIES=private,cloudflare`. Without Cloudflare, use `CLIENT_IP_HEADER=Fly-Client-IP` and `TRUSTED_PROXIES=private`, and country stays blank. Deploy with `fly deploy --image ghcr.io/aviandri/tautan-be:sha-…`.
+- **Neon:** pick the region at creation (it can't be changed later). Use the **direct** connection string, because golang-migrate's advisory lock doesn't work through a transaction pooler.
+- **Vercel:** set `NEXT_PUBLIC_*` and `REVALIDATE_SECRET` in project env. On the API, set `REVALIDATE_URL=https://<domain>/api/revalidate`.
+- **Cookies:** keep the FE and API on the same registrable domain (`<domain>` + `api.<domain>`). A `*.vercel.app` FE against a `*.fly.dev` API is cross-site, and Safari drops the refresh cookie.
+
+## Appendix B: latency and data residency
+
+| Path | Typical RTT |
+|---|---|
+| Jakarta phone → Cloudflare edge (CGK/SIN) | 5–20 ms (plus 4G radio, 50–150 ms) |
+| Jakarta ↔ Singapore data centre | 12–20 ms |
+| Jakarta ↔ US East (Vercel's default `iad1`) | 230+ ms |
+
+FE, API and DB must share a region: an uncached render makes FE → API → DB round trips.
+
+Indonesia's PDP Law (UU 27/2022) and PP 71/2019 generally allow private-sector platforms to store personal data abroad, Singapore included, provided the transfer safeguards are met. Tautan stores creator accounts, form submissions and subscriber emails. Confirm with counsel before launch. If in-country hosting is required, the same compose stack runs unchanged on a Jakarta VPS (Biznet Gio, IDCloudHost).

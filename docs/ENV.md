@@ -1,11 +1,13 @@
 # Environment variables (tautan-be + tautan-fe)
 
+The production values for the chosen setup (single VPS) are wired in [`deploy/docker-compose.prod.yml`](../deploy/docker-compose.prod.yml). You only edit `deploy/.env`; see [DEPLOY.md](DEPLOY.md#where-the-domain-is-set) for where the domain goes.
+
 Every variable the two apps read, audited on 2026-11-18. Columns:
 
 - **Req (prod)**: ✅ must be set in production, ⚙️ set it for your topology, blank means optional.
 - **Secret**: 🔒 keep it out of git and logs; store it in the platform's secret store or the VPS `.env` (mode 600).
 - **Default**: the value used when the variable is unset or empty.
-- **Since**: variables added by deploy-prep PRs that may not be on `main` yet: tautan-be #29 (ops), #31 (proxy/cookies), #32 (storage), and tautan-6c's Google sign-in PR. Everything else is already on `main`.
+- **Since**: the PR that added the variable: tautan-be #29 (ops) and #30 (Google sign-in) are merged; #31 (proxy/cookies) and #32 (storage) are in review. Everything unmarked has been on `main` longer.
 
 ## API (tautan-be)
 
@@ -28,7 +30,7 @@ Every variable the two apps read, audited on 2026-11-18. Columns:
 | Var | Req (prod) | Secret | Default | Notes |
 |---|---|---|---|---|
 | `COOKIE_SECURE` | ✅ | | `false` | `true` behind HTTPS (required by `APP_ENV=production`). |
-| `COOKIE_SAMESITE` | | | `lax` | `lax`, `strict` or `none`. Lax is right when the FE and API share a registrable domain (`tautan.id` + `api.tautan.id`). `none` (forces Secure) only for different domains, and Safari/ITP may still block it. *Since #31.* (Before #31, `COOKIE_SECURE=true` implied `None`.) |
+| `COOKIE_SAMESITE` | | | `lax` | `lax`, `strict` or `none` (anything else is rejected in production). It also applies to the Google OAuth state cookie `tautan_oauth`. Lax is right when the FE and API share a registrable domain (`tautan.id` + `api.tautan.id`). `none` (forces Secure) only for different domains, and Safari/ITP may still block it. *Since #31.* (Before #31, `COOKIE_SECURE=true` implied `None`.) |
 | `COOKIE_DOMAIN` | | | host-only | e.g. `.tautan.id`. Leave empty: the refresh cookie only needs to reach the API host. |
 | `TRUSTED_PROXIES` | ⚙️ | | none | Comma-separated IPs/CIDRs plus `private`, `cloudflare`, `*`. Forwarding headers (client IP, country) are only believed from these peers. VPS + Caddy + Cloudflare: `private,cloudflare`. Fly behind Cloudflare: `private,cloudflare`. *Since #31.* |
 | `CLIENT_IP_HEADER` | | | `X-Forwarded-For` | XFF is walked right to left, skipping trusted hops. Or a single-IP header from a trusted peer: `CF-Connecting-IP`, `Fly-Client-IP`, `X-Real-IP`. *Since #31.* |
@@ -71,7 +73,7 @@ Every variable the two apps read, audited on 2026-11-18. Columns:
 | Var | Req (prod) | Secret | Default | Notes |
 |---|---|---|---|---|
 | `INSTAGRAM_OEMBED_TOKEN` | | 🔒 | – | Meta app token for Instagram oEmbed posters. Without it, Instagram embeds fall back to a plain facade. |
-| `GOOGLE_CLIENT_ID` | | | – | Google sign-in is on only when the ID, secret and redirect URL are all set. *Since tautan-6c's P2-8 PR.* |
+| `GOOGLE_CLIENT_ID` | | | – | Google sign-in is on only when the ID, secret and redirect URL are all set. *Since #30.* |
 | `GOOGLE_CLIENT_SECRET` | | 🔒 | – | |
 | `GOOGLE_REDIRECT_URL` | | | – | The FE callback page, e.g. `https://tautan.id/auth/google/callback`. Register it in Google Cloud Console. |
 | `GOOGLE_ISSUER` | | | `https://accounts.google.com` | Only for tests (fake OIDC server). |
