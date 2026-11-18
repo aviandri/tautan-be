@@ -37,6 +37,10 @@ type Server struct {
 	// Payments: nil sealer = PAYMENTS_ENCRYPTION_KEY unset, payments off.
 	sealer              *payments.Sealer
 	providerTestLimiter *rateLimiter
+	orderLimiter        *rateLimiter
+	lookupLimiter       *rateLimiter
+	receiptPageLimiter  *rateLimiter
+	receiptToLimiter    *rateLimiter
 	// PaymentOptions configures provider adapters (tests point them at fakes).
 	PaymentOptions payments.Options
 	fetcher        *safeFetcher
@@ -80,6 +84,10 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		proxy:           newProxyResolver(cfg),
 
 		providerTestLimiter: newRateLimiter(20, 10*time.Minute),
+		orderLimiter:        newRateLimiter(10, 10*time.Minute),
+		lookupLimiter:       newRateLimiter(10, 10*time.Minute),
+		receiptPageLimiter:  newRateLimiter(60, time.Hour),
+		receiptToLimiter:    newRateLimiter(5, time.Hour),
 	}
 	sealer, err := payments.NewSealer(cfg.PaymentsEncryptionKey, cfg.PaymentsEncryptionKeysOld)
 	if err != nil {
@@ -136,6 +144,9 @@ func (s *Server) Routes() http.Handler {
 	r.Get("/readyz", s.handleReady)
 	r.Get("/healthz", s.handleHealth)
 	r.Handle("/uploads/*", s.serveUploads())
+	// Payments (b): provider notifications, outside /api/v1 (no CORS, no auth;
+	// each provider's own signature check authenticates them).
+	r.Post("/webhooks/{provider}/{profile_id}", s.handlePaymentWebhook)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
 
@@ -164,6 +175,10 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/public/{username}/blocks/{id}/lead", s.handleLead)
 		r.Post("/public/{username}/blocks/{id}/enter", s.handleGiveawayEnter)
 		r.Get("/public/{username}/download/{token}", s.handleLeadDownload)
+		r.Post("/public/{username}/orders", s.handleCreateOrder)
+		r.Post("/public/{username}/orders/lookup", s.handleOrderLookup)
+		r.Get("/public/{username}/orders/download/{token}", s.handleOrderDownload)
+		r.Get("/public/{username}/orders/{id}", s.handlePublicOrder)
 
 		r.Group(func(r chi.Router) {
 			r.Use(s.requireAuth)
@@ -209,13 +224,18 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/questions", s.handleListQuestions)
 				r.With(s.revalidatesPage).Patch("/questions/{id}", s.handlePatchQuestion)
 				r.With(s.revalidatesPage).Delete("/questions/{id}", s.handleDeleteQuestion)
+				r.Get("/orders", s.handleListOrders)
+				r.Get("/orders.csv", s.handleOrdersCSV)
+				r.Get("/orders/{id}", s.handleGetOrder)
+				r.Post("/orders/{id}/refresh", s.handleRefreshOrder)
 				r.Route("/payments/providers", func(r chi.Router) {
 					r.Get("/", s.handleListProviders)
 					r.Group(func(r chi.Router) {
 						r.Use(s.requirePayments)
-						r.Put("/{provider}", s.handlePutProvider)
+						// enabled providers are part of page reads (buy buttons)
+						r.With(s.revalidatesPage).Put("/{provider}", s.handlePutProvider)
 						r.Post("/{provider}/test", s.handleTestProvider)
-						r.Delete("/{provider}", s.handleDeleteProvider)
+						r.With(s.revalidatesPage).Delete("/{provider}", s.handleDeleteProvider)
 					})
 				})
 

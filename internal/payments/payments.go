@@ -93,6 +93,11 @@ type Event struct {
 	Currency   string // upper case, "" when unknown
 	Live       *bool  // set when the payload says which mode it came from
 	Type       string // provider event type, for logs
+	// Confirm means the payload's status isn't covered by the provider's
+	// authentication (Midtrans signs only order_id, status_code and
+	// gross_amount; Xendit has a static token and no body signature), so the
+	// caller must ask GetStatus for the real state before acting on it.
+	Confirm bool
 }
 
 // Provider is one connected provider account.

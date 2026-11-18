@@ -173,12 +173,10 @@ func (x *xendit) VerifyWebhook(r *http.Request, body []byte) (Event, error) {
 		return Event{}, &Error{Code: "invalid_payload", Message: "not an invoice callback"}
 	}
 	ev := x.event(inv)
-	// Xendit sends a webhook-id header that is stable across retries.
-	if id := r.Header.Get("webhook-id"); id != "" {
-		ev.Key = "wh:" + id
-	} else {
-		ev.Key = inv.ID + ":" + strings.ToUpper(inv.Status)
-	}
+	// The token is static and the body unsigned: key on the invoice only, and
+	// let the caller confirm the status with GetStatus.
+	ev.Key = "inv:" + inv.ID
+	ev.Confirm = true
 	return ev, nil
 }
 

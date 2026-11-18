@@ -146,8 +146,13 @@ func (m *midtrans) event(tx midtransTx) Event {
 	}
 	switch tx.TransactionStatus {
 	case "settlement":
-		ev.Status = StatusPaid
+		if tx.StatusCode == "200" {
+			ev.Status = StatusPaid
+		}
 	case "capture":
+		if tx.StatusCode != "200" {
+			break
+		}
 		// Card payments: "challenge" waits for the merchant to review in the dashboard.
 		if tx.FraudStatus == "accept" || tx.FraudStatus == "" {
 			ev.Status = StatusPaid
@@ -181,10 +186,10 @@ func (m *midtrans) VerifyWebhook(r *http.Request, body []byte) (Event, error) {
 		return Event{}, ErrBadSignature
 	}
 	ev := m.event(tx)
-	ev.Key = tx.TransactionID + ":" + tx.TransactionStatus + ":" + tx.StatusCode
-	if tx.TransactionID == "" {
-		ev.Key = tx.OrderID + ":" + tx.TransactionStatus + ":" + tx.StatusCode
-	}
+	// Only these fields are signed; transaction_status and transaction_id
+	// aren't, so they stay out of the key and the status must be confirmed.
+	ev.Key = tx.OrderID + ":" + tx.StatusCode + ":" + tx.GrossAmount
+	ev.Confirm = true
 	return ev, nil
 }
 
@@ -209,6 +214,9 @@ func (m *midtrans) GetStatus(ctx context.Context, ref string) (Event, error) {
 		return Event{}, ErrNotFound
 	case code == "401" || status == http.StatusUnauthorized:
 		return Event{}, providerError(http.StatusUnauthorized, tx.StatusMessage, "Midtrans rejected the server key")
+	case tx.TransactionStatus != "" && tx.OrderID != "":
+		// A transaction: its status_code follows the state (201 pending,
+		// 202 deny, 407 expire), so it isn't an error.
 	case status/100 != 2 || (len(code) == 3 && code[0] != '2'):
 		return Event{}, providerError(status, tx.StatusMessage, "Midtrans couldn't read the transaction")
 	}

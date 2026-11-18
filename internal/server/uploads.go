@@ -40,7 +40,10 @@ var fileTypes = map[string]string{
 }
 
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	isFile := r.URL.Query().Get("kind") == "file"
+	// kind=private: a paid deliverable (payments b), stored under a private
+	// name that /uploads never serves.
+	isPrivate := r.URL.Query().Get("kind") == "private"
+	isFile := r.URL.Query().Get("kind") == "file" || isPrivate
 	limit := int64(maxUploadBytes)
 	if isFile {
 		limit = maxFileBytes
@@ -103,7 +106,18 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 		src = bytes.NewReader(data)
 	}
-	fileURL, err := s.storeUpload(r.Context(), src, ext, strings.SplitN(ctype, ";", 2)[0])
+	var fileURL string
+	if isPrivate {
+		name := newPrivateName(ext)
+		err = s.uploads().Put(r.Context(), name, src, strings.SplitN(ctype, ";", 2)[0])
+		if err == nil {
+			err = s.recordPrivate(r.Context(), s.db, profileID(r), name)
+		}
+		fileURL = s.cfg.PublicBaseURL + "/uploads/" + name
+		isImage = false // no public variants for private files
+	} else {
+		fileURL, err = s.storeUpload(r.Context(), src, ext, strings.SplitN(ctype, ";", 2)[0])
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
