@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -173,7 +175,7 @@ func createAccount(ctx context.Context, tx pgx.Tx, email string, passwordHash *s
 func (s *Server) issueSession(ctx context.Context, w http.ResponseWriter, uid string) (string, error) {
 	tok, err := s.issueAccessToken(uid)
 	if err == nil {
-		err = s.issueRefreshToken(ctx, w, uid)
+		err = s.issueRefreshToken(ctx, w, uid, "")
 	}
 	return tok, err
 }
@@ -194,14 +196,18 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "no_refresh_token", "refresh token missing")
 		return
 	}
-	ctx := r.Context()
-	var uid string
+	ctx, now := r.Context(), s.now()
+	var uid, family string
 	err = s.db.QueryRow(ctx,
-		`UPDATE refresh_tokens SET revoked_at = now()
+		`UPDATE refresh_tokens SET revoked_at = $2, rotated_at = $2
 		 WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > $2
-		 RETURNING user_id`, hashToken(c.Value), s.now()).Scan(&uid)
+		 RETURNING user_id, family_id`, hashToken(c.Value), now).Scan(&uid, &family)
 	if errors.Is(err, pgx.ErrNoRows) {
-		s.setRefreshCookie(w, "", s.now())
+		if err := s.detectRefreshReuse(ctx, hashToken(c.Value), now); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		s.setRefreshCookie(w, "", now)
 		writeError(w, http.StatusUnauthorized, "invalid_refresh_token", "refresh token is invalid or expired")
 		return
 	}
@@ -211,13 +217,44 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	tok, err := s.issueAccessToken(uid)
 	if err == nil {
-		err = s.issueRefreshToken(ctx, w, uid)
+		err = s.issueRefreshToken(ctx, w, uid, family)
 	}
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"access_token": tok})
+}
+
+// refreshReuseGrace lets two tabs that refresh at the same moment both
+// present the same token without it counting as theft: the loser just gets 401.
+const refreshReuseGrace = 20 * time.Second
+
+// detectRefreshReuse handles a refresh token that didn't rotate. If it was
+// already rotated (not merely revoked by logout, a password reset or an email
+// change), someone presented a copy: revoke the whole family and end the
+// account's access tokens (security audit 2026-11, M3). The family's live
+// token, held by either the real user or the thief, dies with it; other
+// sign-ins (other families) keep working and refresh into new access tokens.
+func (s *Server) detectRefreshReuse(ctx context.Context, hash string, now time.Time) error {
+	var uid, family string
+	var rotated *time.Time
+	err := s.db.QueryRow(ctx, `SELECT user_id, family_id, rotated_at FROM refresh_tokens WHERE token_hash = $1 AND expires_at > $2`,
+		hash, now).Scan(&uid, &family, &rotated)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (rotated == nil || now.Sub(*rotated) < refreshReuseGrace)) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	slog.Warn("auth: rotated refresh token reused; revoking its family", "user", uid, "family", family)
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = $2 WHERE family_id = $1 AND revoked_at IS NULL`, family, now); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE users SET sessions_revoked_at = $2 WHERE id = $1`, uid, now)
+		return err
+	})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
