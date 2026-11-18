@@ -78,6 +78,19 @@ Every variable the two apps read, audited on 2026-11-18. Columns:
 | `GOOGLE_REDIRECT_URL` | | | – | The FE callback page, e.g. `https://tautan.id/auth/google/callback`. Register it in Google Cloud Console. |
 | `GOOGLE_ISSUER` | | | `https://accounts.google.com` | Only for tests (fake OIDC server). |
 
+### Email
+
+Mail is queued in Postgres (`email_outbox`) and sent by a worker inside the API process, so queued mail survives restarts and no extra service is needed. *All since #37.*
+
+| Var | Req (prod) | Secret | Default | Notes |
+|---|---|---|---|---|
+| `MAIL_DRIVER` | ⚙️ | | `log` | `log` or `smtp`. With `log` nothing is sent; in production the API warns at startup, and full bodies (with live reset links) are logged only outside production. Deploys work before a provider is chosen. An unknown value stops startup. |
+| `MAIL_FROM` | ⚙️ (smtp) | | `Tautan <no-reply@localhost>` | e.g. `Tautan <hello@mail.tautan.id>`. Must be a valid address with `smtp`. |
+| `SMTP_HOST` | ⚙️ (smtp) | | – | Required with `smtp`, e.g. `smtp.resend.com`. |
+| `SMTP_PORT` | | | `587` | 587 = STARTTLS; 465 = implicit TLS. |
+| `SMTP_USERNAME` | | | empty (no AUTH) | Resend: `resend`. |
+| `SMTP_PASSWORD` | | 🔒 | – | Resend: the API key. |
+
 ### Payments (tautan-41)
 
 | Var | Req (prod) | Secret | Default | Notes |

@@ -48,7 +48,8 @@ Trade-offs accepted with this choice:
 | 2 | **`deploy/.env`** on the VPS | `SITE_DOMAIN=<domain>`, `API_DOMAIN=api.<domain>` | `docker compose up -d`. This one setting drives the API's `PUBLIC_BASE_URL`, `APP_BASE_URL` and `CORS_ORIGINS` (via `docker-compose.prod.yml`) **and** Caddy's site addresses. |
 | 3 | **`deploy/Caddyfile`** | Nothing to edit: it reads `{$SITE_DOMAIN}` and `{$API_DOMAIN}` from #2. It also serves `www.<domain>` as a redirect. | With #2. |
 | 4 | **Cloudflare** | The zone for `<domain>`; DNS `@`, `www` and `api`; an Origin CA certificate for `<domain>, *.<domain>` saved in `deploy/certs/` | Immediately. |
-| 5 | **Google sign-in** (optional) | `GOOGLE_REDIRECT_URL=https://<domain>/auth/google/callback` in `deploy/.env`, and the same URL under *Authorised redirect URIs* in Google Cloud Console | `docker compose up -d`. |
+| 5 | **Email** | `MAIL_FROM=Tautan <hello@mail.<domain>>` in `deploy/.env`, plus SPF, DKIM and DMARC for `mail.<domain>` in Cloudflare | `docker compose up -d`. |
+| 6 | **Google sign-in** (optional) | `GOOGLE_REDIRECT_URL=https://<domain>/auth/google/callback` in `deploy/.env`, and the same URL under *Authorised redirect URIs* in Google Cloud Console | `docker compose up -d`. |
 
 ⚠️ Choose the domain **before real users upload images**. Upload URLs are stored as absolute `https://<API_DOMAIN>/uploads/<name>`, so changing `API_DOMAIN` later breaks existing images unless the old hostname keeps pointing at the API.
 
@@ -134,7 +135,17 @@ The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=pro
    gunzip -c backups/tautan-<ts>.sql.gz | docker compose -f docker-compose.prod.yml exec -T db psql -U tautan -d tautan_restore
    ```
 
-### 6. Upgrades, rollback, operations
+### 6. Email (password resets, notifications)
+
+Until this step `MAIL_DRIVER=log`: the API starts, but nothing is sent, and it logs a startup warning. Before launch:
+1. Pick a provider (e.g. Resend) and add the sending domain as a **subdomain**, `mail.<domain>`, which keeps the apex's reputation separate.
+2. In Cloudflare DNS, add the provider's **SPF** (TXT) and **DKIM** records for `mail.<domain>` as **DNS only** (grey cloud), plus a DMARC record: `TXT _dmarc.mail.<domain> "v=DMARC1; p=quarantine; rua=mailto:<you>"`.
+3. In `.env`, set `MAIL_DRIVER=smtp`, `MAIL_FROM=Tautan <hello@mail.<domain>>` and `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` and `SMTP_PASSWORD` (for Resend, the password is the API key). Then run `docker compose -f docker-compose.prod.yml up -d api`. Startup fails if `smtp` is missing a host or a valid from address.
+4. Most VPS providers (DigitalOcean included) block outbound port 25, so use 587 or 465. Both work.
+
+Queued mail lives in Postgres (`email_outbox`), so a restart doesn't lose it.
+
+### 7. Upgrades, rollback, operations
 
 - **Upgrade:** set `TAUTAN_BE_TAG` and `TAUTAN_FE_TAG` in `.env` to the new `sha-xxxxxxx` tags (shown on each package's GHCR page), then run `docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d`. On SIGTERM the API fails `/readyz`, waits `SHUTDOWN_DELAY`, drains requests and flushes pending page revalidations. Expect a few seconds of 502s while a container restarts.
 - **Rollback:** put the previous sha tags back, then run `up -d`. Migrations only move forward, and ours are additive, so older code tolerates a newer schema. Check the release notes if a migration dropped anything.
@@ -162,6 +173,7 @@ Replace `<domain>` with the real one. Run from a phone on mobile data where note
 - ☐ Reload the dashboard (the access token is in memory, so a reload forces `POST /auth/refresh`): you stay logged in. Test **Safari on iOS** too.
 - ☐ Log out, then reload: you're logged out.
 - ☐ (If configured) Google sign-in round trip works.
+- ☐ "Forgot password" sends a reset email to a real inbox (not spam), and the link works. With `MAIL_DRIVER=log`, expect only the startup warning and no email.
 
 **Editor → public page (ISR + revalidate)**
 - ☐ Publish a page with a link block and an image block. `https://<domain>/<username>` renders.
