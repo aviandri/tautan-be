@@ -19,14 +19,22 @@ type (
 		Name    string   `json:"name"`
 		Options []string `json:"options"`
 	}
+	// DownloadFile is what a buyer gets after paying for a checkout product.
+	DownloadFile struct {
+		URL      string `json:"url"`
+		FileName string `json:"file_name,omitempty"`
+	}
 	// SellAction is what a product's buy button does.
 	SellAction struct {
-		Kind        string `json:"kind"` // url | whatsapp | marketplace
+		Kind        string `json:"kind"` // url | whatsapp | marketplace | checkout
 		URL         string `json:"url,omitempty"`
 		WANumber    string `json:"wa_number,omitempty"`
 		WATemplate  string `json:"wa_template,omitempty"` // {name} {variant} {price}
 		Marketplace string `json:"marketplace,omitempty"`
 		Label       string `json:"label,omitempty"`
+		// checkout only (payments b): the digital file delivered after payment.
+		// Never part of public reads.
+		Download *DownloadFile `json:"download,omitempty"`
 	}
 	ProductData struct {
 		ID          string           `json:"id,omitempty"` // shop items only
@@ -159,7 +167,7 @@ var (
 	marketplacePlatforms = set("shopee", "tokopedia", "tiktok_shop", "lazada", "blibli", "bukalapak", "etsy", "amazon", "gumroad")
 	tipPlatforms         = set("saweria", "trakteer", "kofi", "paypal", "buymeacoffee")
 	productBadges        = set("new", "best_seller", "pre_order", "sold_out")
-	sellActionKinds      = set("url", "whatsapp", "marketplace")
+	sellActionKinds      = set("url", "whatsapp", "marketplace", "checkout")
 	waOrderFields        = set("items", "name", "address", "note")
 	weekDays             = set("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 	couriers             = set("gosend", "grabexpress", "jne", "jnt", "sicepat", "anteraja", "pos", "shopee_express", "lalamove", "paxel", "pickup")
@@ -251,12 +259,21 @@ func checkText(field, v string, n int) error {
 
 func checkSellAction(p string, a *SellAction) error {
 	if !sellActionKinds[a.Kind] {
-		return ferr(p+".kind", "%s.kind must be url, whatsapp or marketplace", p)
+		return ferr(p+".kind", "%s.kind must be url, whatsapp, marketplace or checkout", p)
 	}
 	if err := maxLen(p+".label", a.Label, 40); err != nil {
 		return err
 	}
+	if a.Kind != "checkout" {
+		a.Download = nil
+	}
 	switch a.Kind {
+	case "checkout":
+		a.URL, a.WANumber, a.WATemplate, a.Marketplace = "", "", "", ""
+		if a.Download == nil {
+			return ferr(p+".download.url", "%s.download.url is required for checkout", p)
+		}
+		return firstErr(checkImageURL(p+".download.url", a.Download.URL, true), maxLen(p+".download.file_name", a.Download.FileName, 200))
 	case "url":
 		a.WANumber, a.WATemplate, a.Marketplace = "", "", ""
 		return checkWebURL(p+".url", a.URL, true)
@@ -313,7 +330,38 @@ func checkProduct(p string, d *ProductData) error {
 			}
 		}
 	}
-	return checkSellAction(p+"action", &d.Action)
+	if err := checkSellAction(p+"action", &d.Action); err != nil {
+		return err
+	}
+	if d.Action.Kind == "checkout" {
+		if d.Price == nil {
+			return ferr(p+"price", "%sprice is required for checkout", p)
+		}
+		return checkPaidPrice(p, d.Price, &d.Currency)
+	}
+	return nil
+}
+
+// checkPaidPrice validates a price that goes through checkout (payments b):
+// above zero, IDR or USD (what every provider here can take), and whole
+// rupiah for IDR because Xendit and Midtrans don't accept sen.
+func checkPaidPrice(p string, price *int64, currency *string) error {
+	if price == nil {
+		return nil
+	}
+	if *price <= 0 || *price > maxMoney {
+		return ferr(p+"price", "%sprice must be greater than 0 (minor units)", p)
+	}
+	if *currency == "" {
+		*currency = "IDR"
+	}
+	if *currency != "IDR" && *currency != "USD" {
+		return ferr(p+"currency", "%scurrency must be IDR or USD for checkout", p)
+	}
+	if *currency == "IDR" && *price%100 != 0 {
+		return ferr(p+"price", "%sprice must be whole rupiah (a multiple of 100 minor units)", p)
+	}
+	return nil
 }
 
 func checkShop(d *ShopData) error {

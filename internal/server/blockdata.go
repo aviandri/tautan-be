@@ -121,10 +121,14 @@ type (
 		Schedule *Schedule `json:"schedule,omitempty"`
 	}
 	FileData struct {
-		Title    string    `json:"title"`
-		URL      string    `json:"url"`
-		FileName string    `json:"file_name,omitempty"`
-		Size     int64     `json:"size,omitempty"` // bytes
+		Title    string `json:"title"`
+		URL      string `json:"url"` // dropped from public reads when the file has a price
+		FileName string `json:"file_name,omitempty"`
+		Size     int64  `json:"size,omitempty"` // bytes
+		// Payments (b): a priced file is sold through checkout; the buyer gets a
+		// signed, expiring link instead of the URL.
+		Price    *int64    `json:"price,omitempty"`
+		Currency string    `json:"currency,omitempty"`
 		Schedule *Schedule `json:"schedule,omitempty"`
 	}
 	DiscountCodeData struct {
@@ -361,7 +365,11 @@ func validateBlockData(typ string, raw json.RawMessage) (json.RawMessage, error)
 			if d.Size < 0 {
 				return fmt.Errorf("size must not be negative")
 			}
-			return firstErr(required("title", d.Title), checkURL("url", d.URL, true), maxLen("file_name", d.FileName, 200))
+			if d.Price == nil {
+				d.Currency = ""
+			}
+			return firstErr(required("title", d.Title), checkURL("url", d.URL, true), maxLen("file_name", d.FileName, 200),
+				checkPaidPrice("", d.Price, &d.Currency))
 		}
 	case "discount_code":
 		d := &DiscountCodeData{}

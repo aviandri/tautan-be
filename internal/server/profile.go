@@ -263,6 +263,8 @@ type pageResponse struct {
 	// Media maps each referenced "/uploads/<name>" image to its size and ready
 	// variant widths (perf 2b).
 	Media map[string]imageInfo `json:"media"`
+	// Payments (b): providers buyers can pay with; null when none is on.
+	Payments *pagePayments `json:"payments"`
 }
 
 func (s *Server) handleEditor(w http.ResponseWriter, r *http.Request) {
@@ -308,6 +310,7 @@ func (s *Server) loadPageWith(ctx context.Context, pid string, visibleOnly bool,
 		out.Blocks = publicBlocks(out.Blocks, s.now())
 		for i := range out.Blocks {
 			publicBlockData(&out.Blocks[i], s.now())
+			stripPaidContent(&out.Blocks[i])
 		}
 		out.Profile.Announcement = publicAnnouncement(out.Profile.Announcement, s.now())
 	}
@@ -323,7 +326,10 @@ func (s *Server) loadPageWith(ctx context.Context, pid string, visibleOnly bool,
 	if visibleOnly {
 		lockBlocks(out.Blocks, open) // after every attach, before media: nothing gated leaks
 	}
-	out.Media, err = s.pageMedia(ctx, out)
+	if out.Media, err = s.pageMedia(ctx, out); err != nil {
+		return out, err
+	}
+	out.Payments, err = s.pagePayments(ctx, pid)
 	return out, err
 }
 
