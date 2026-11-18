@@ -162,6 +162,7 @@ func (s *Server) Routes() http.Handler {
 			r.Get("/me", s.handleMe)
 			r.Patch("/me/password", s.handleSetPassword)
 			r.Post("/me/verification-email", s.handleResendVerification)
+			r.Patch("/me/notifications", s.handlePatchNotifications)
 			r.Group(func(r chi.Router) {
 				r.Use(s.withProfile)
 				r.With(s.revalidatesPage).Patch("/profile", s.handlePatchProfile)

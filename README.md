@@ -110,6 +110,9 @@ then `failed`. Bodies are cleared once a message is sent or fails, because they 
   records plus a DMARC record in Cloudflare.
 - Email verification: signup sends a confirmation link (`/verify-email?token=`, 72 h).
   Unverified accounts can't publish an unpublished page (403 `email_unverified`).
+- Owner notifications: contact messages and form responses email the page owner (on by
+  default, confirmed addresses only, 20/hour per owner, Reply-To the visitor).
+  `PATCH /me/notifications {submissions}` turns them off.
 - New features send mail with `s.enqueueEmail(ctx, tx, kind, mail.Message{...})`. Put
   templates in `internal/mail/templates.go`.
 

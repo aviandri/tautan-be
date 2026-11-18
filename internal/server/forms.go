@@ -303,8 +303,15 @@ func (s *Server) handlePublicForm(w http.ResponseWriter, r *http.Request) {
 			contactID = &cid
 		}
 		enc, _ := json.Marshal(answers)
-		return tx.QueryRow(ctx, `INSERT INTO form_submissions (profile_id, block_id, contact_id, answers, created_at)
-			VALUES ($1, $2, $3, $4, $5) RETURNING id`, pid, b.ID, contactID, enc, now).Scan(&id)
+		if err := tx.QueryRow(ctx, `INSERT INTO form_submissions (profile_id, block_id, contact_id, answers, created_at)
+			VALUES ($1, $2, $3, $4, $5) RETURNING id`, pid, b.ID, contactID, enc, now).Scan(&id); err != nil {
+			return err
+		}
+		replyTo := ""
+		if validEmail(email) {
+			replyTo = email
+		}
+		return s.notifySubmission(ctx, tx, pid, submissionNote{kind: "form", blockTitle: form.Title, replyTo: replyTo, fields: answerFields(answers)})
 	})
 	if err != nil {
 		s.internalError(w, err)

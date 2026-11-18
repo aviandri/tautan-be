@@ -28,8 +28,8 @@ type execer interface {
 // enqueueEmail stores m for delivery. Pass a pgx.Tx to send only if the
 // surrounding transaction commits.
 func (s *Server) enqueueEmail(ctx context.Context, q execer, kind string, m mail.Message) error {
-	_, err := q.Exec(ctx, `INSERT INTO email_outbox (kind, to_email, subject, text_body, html_body, next_attempt_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`, kind, m.To, m.Subject, m.Text, m.HTML, s.now())
+	_, err := q.Exec(ctx, `INSERT INTO email_outbox (kind, to_email, subject, text_body, html_body, reply_to, next_attempt_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`, kind, m.To, m.Subject, m.Text, m.HTML, m.ReplyTo, s.now())
 	if err == nil {
 		s.wakeMailer()
 	}
@@ -58,7 +58,7 @@ func (s *Server) DeliverPending(ctx context.Context) (int, error) {
 	rows, err := s.db.Query(ctx, `UPDATE email_outbox SET attempts = attempts + 1, next_attempt_at = $2
 		WHERE id IN (SELECT id FROM email_outbox WHERE status = 'pending' AND next_attempt_at <= $1
 		             ORDER BY id LIMIT $3 FOR UPDATE SKIP LOCKED)
-		RETURNING id, kind, to_email, subject, text_body, html_body, attempts`, now, now.Add(outboxLease), outboxBatch)
+		RETURNING id, kind, to_email, subject, text_body, html_body, reply_to, attempts`, now, now.Add(outboxLease), outboxBatch)
 	if err != nil {
 		return 0, err
 	}
@@ -71,7 +71,7 @@ func (s *Server) DeliverPending(ctx context.Context) (int, error) {
 	var jobs []job
 	for rows.Next() {
 		var j job
-		if err := rows.Scan(&j.id, &j.kind, &j.m.To, &j.m.Subject, &j.m.Text, &j.m.HTML, &j.attempts); err != nil {
+		if err := rows.Scan(&j.id, &j.kind, &j.m.To, &j.m.Subject, &j.m.Text, &j.m.HTML, &j.m.ReplyTo, &j.attempts); err != nil {
 			rows.Close()
 			return 0, err
 		}
