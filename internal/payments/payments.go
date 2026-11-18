@@ -214,7 +214,7 @@ func AmountRange(name, currency string) (min, max int64) {
 }
 
 // NeedsWebhookSecret reports whether a provider uses a separate webhook secret.
-func NeedsWebhookSecret(name string) bool { return name != Midtrans }
+func NeedsWebhookSecret(name string) bool { return name != Midtrans && name != Fake }
 
 // Error is a provider failure with a stable code for the API.
 type Error struct {
@@ -271,6 +271,8 @@ func ValidateCredentials(name, mode string, c Credentials) map[string]string {
 		if ws != "" {
 			errs["webhook_secret"] = "Midtrans signs notifications with the server key; leave this empty"
 		}
+	case Fake:
+		validateFake(mode, c, errs)
 	case Stripe:
 		switch {
 		case strings.HasPrefix(sk, "pk_"):

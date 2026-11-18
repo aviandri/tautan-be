@@ -96,6 +96,7 @@ func TestPaymentProvidersFlow(t *testing.T) {
 
 	var list providersResp
 	do(t, h, "GET", "/api/v1/payments/providers", nil, tok).expect(200).json(&list)
+	// The dev-only fake provider is off unless PAYMENTS_FAKE=1.
 	if !list.Available || len(list.Providers) != 3 || list.Providers[0].Provider != "xendit" || list.Providers[0].Configured {
 		t.Fatalf("initial list = %+v", list)
 	}

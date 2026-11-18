@@ -36,6 +36,7 @@ type Server struct {
 	unlockLimiter   *rateLimiter
 	// Payments: nil sealer = PAYMENTS_ENCRYPTION_KEY unset, payments off.
 	sealer              *payments.Sealer
+	fake                *payments.FakeStore // dev-only "fake" provider; nil unless PAYMENTS_FAKE=1 outside production
 	providerTestLimiter *rateLimiter
 	orderLimiter        *rateLimiter
 	lookupLimiter       *rateLimiter
@@ -103,6 +104,9 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		log.Printf("payments disabled: %v", err)
 	}
 	s.sealer = sealer
+	if cfg.FakePayments() { // PAYMENTS_FAKE=1 and not production
+		s.fake = payments.NewFakeStore()
+	}
 	// Run rejects a bad mail config first (MailConfig); fall back to the log driver here.
 	if m, err := mail.New(MailConfig(cfg)); err == nil {
 		s.mailer = m
@@ -155,6 +159,11 @@ func (s *Server) Routes() http.Handler {
 	// Payments (b): provider notifications, outside /api/v1 (no CORS, no auth;
 	// each provider's own signature check authenticates them).
 	r.Post("/webhooks/{provider}/{profile_id}", s.handlePaymentWebhook)
+	if s.fake != nil {
+		// Dev only: the fake provider's hosted checkout (dev_checkout.go).
+		r.Get("/dev/fake-checkout/{ref}", s.handleFakeCheckoutPage)
+		r.Post("/dev/fake-checkout/{ref}/{action}", s.handleFakeCheckoutAction)
+	}
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", s.handleHealth)
 

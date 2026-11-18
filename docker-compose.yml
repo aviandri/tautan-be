@@ -11,6 +11,7 @@ services:
     ports: ["8080:8080"]
     environment:
       APP_ENV: development # the image defaults to production, which rejects these dev values
+      PAYMENTS_FAKE: "0" # set "1" for the dev-only fake payment provider (local e2e only)
       DATABASE_URL: postgres://tautan:tautan@db:5432/tautan?sslmode=disable
       JWT_SECRET: change-me
       CORS_ORIGINS: http://localhost:3000

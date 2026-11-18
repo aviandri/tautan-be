@@ -117,7 +117,24 @@ func (s *Server) openCreds(profileID, provider string, row *providerRow) (paymen
 }
 
 func (s *Server) provider(name, mode string, c payments.Credentials) (payments.Provider, error) {
+	if name == payments.Fake {
+		return payments.NewFake(mode, c, s.fake, s.cfg.PublicBaseURL, s.PaymentOptions)
+	}
 	return payments.New(name, mode, c, s.PaymentOptions)
+}
+
+// providerNames lists the providers this server offers, in display order: the
+// real ones, plus the fake one outside production.
+func (s *Server) providerNames() []string {
+	if s.fake == nil {
+		return payments.Names
+	}
+	return append(append([]string{}, payments.Names...), payments.Fake)
+}
+
+// providerAllowed reports whether name is a provider this server offers.
+func (s *Server) providerAllowed(name string) bool {
+	return payments.Valid(name) || (name == payments.Fake && s.fake != nil)
 }
 
 // requirePayments answers 503 when PAYMENTS_ENCRYPTION_KEY isn't set.
@@ -132,9 +149,9 @@ func (s *Server) requirePayments(next http.Handler) http.Handler {
 	})
 }
 
-func pathProvider(w http.ResponseWriter, r *http.Request) (string, bool) {
+func (s *Server) pathProvider(w http.ResponseWriter, r *http.Request) (string, bool) {
 	name := chi.URLParam(r, "provider")
-	if !payments.Valid(name) {
+	if !s.providerAllowed(name) {
 		writeError(w, http.StatusNotFound, "not_found", "unknown payment provider")
 		return "", false
 	}
@@ -146,7 +163,7 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 	pid := profileID(r)
 	rows := map[string]*providerRow{}
 	if s.sealer != nil {
-		for _, name := range payments.Names {
+		for _, name := range s.providerNames() {
 			row, err := s.loadProviderRow(r.Context(), s.db, pid, name, false)
 			if err != nil {
 				s.internalError(w, err)
@@ -155,8 +172,8 @@ func (s *Server) handleListProviders(w http.ResponseWriter, r *http.Request) {
 			rows[name] = row
 		}
 	}
-	out := make([]providerSettings, 0, len(payments.Names))
-	for _, name := range payments.Names {
+	out := make([]providerSettings, 0, len(s.providerNames()))
+	for _, name := range s.providerNames() {
 		out = append(out, s.providerView(pid, name, rows[name]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"available": s.sealer != nil, "providers": out})
@@ -177,7 +194,7 @@ type putProviderReq struct {
 // changes the connection is tested; a failed test saves the keys but leaves
 // the provider disabled.
 func (s *Server) handlePutProvider(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathProvider(w, r)
+	name, ok := s.pathProvider(w, r)
 	if !ok {
 		return
 	}
@@ -322,7 +339,7 @@ func (s *Server) testConnection(ctx context.Context, name, mode string, c paymen
 // POST /payments/providers/{provider}/test re-tests the stored keys. A failed
 // test is recorded but doesn't turn the provider off (outages happen).
 func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathProvider(w, r)
+	name, ok := s.pathProvider(w, r)
 	if !ok {
 		return
 	}
@@ -367,7 +384,7 @@ func (s *Server) handleTestProvider(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /payments/providers/{provider} forgets the keys.
 func (s *Server) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
-	name, ok := pathProvider(w, r)
+	name, ok := s.pathProvider(w, r)
 	if !ok {
 		return
 	}

@@ -2,7 +2,7 @@ export PATH := $(HOME)/.local/go/bin:$(PATH)
 
 .PHONY: dev run build test vet fmt tidy seed-heavy seed-heavy-all
 
-dev:            ## Run API on :8080 with embedded Postgres (data in ./.devdata)
+dev:            ## Run API on :8080 with embedded Postgres (data in ./.devdata); PAYMENTS_FAKE=1 make dev adds the fake payment provider
 	go run ./cmd/dev
 
 seed-heavy:     ## (Re)create the perf test page "heavy" (baseline 13 blocks + 9 sell cards)

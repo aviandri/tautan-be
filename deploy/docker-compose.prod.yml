@@ -38,6 +38,7 @@ services:
     stop_grace_period: 30s
     environment:
       APP_ENV: production
+      PAYMENTS_FAKE: "0" # dev-only fake payment provider: never on here (the API refuses to start with 1 + production)
       DATABASE_URL: postgres://tautan:${POSTGRES_PASSWORD}@db:5432/tautan?sslmode=disable
       JWT_SECRET: ${JWT_SECRET}
       PUBLIC_BASE_URL: https://${API_DOMAIN}

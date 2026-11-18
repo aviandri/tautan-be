@@ -237,7 +237,7 @@ func (s *Server) enabledProviders(ctx context.Context, pid string) ([]string, er
 		return nil, err
 	}
 	var out []string
-	for _, n := range payments.Names {
+	for _, n := range s.providerNames() {
 		for _, h := range have {
 			if h == n {
 				out = append(out, n)
@@ -969,7 +969,7 @@ func (s *Server) serveDownload(w http.ResponseWriter, r *http.Request, d Downloa
 func (s *Server) handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "provider")
 	pid := chi.URLParam(r, "profile_id")
-	if !payments.Valid(name) {
+	if !s.providerAllowed(name) {
 		writeError(w, http.StatusNotFound, "not_found", "unknown provider")
 		return
 	}
