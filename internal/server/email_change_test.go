@@ -35,7 +35,6 @@ var (
 	revertChangeRE  = regexp.MustCompile(`/revert-email-change\?token=([A-Za-z0-9_%-]+)`)
 )
 
-
 func TestEmailChangeConfirmNotifyRevert(t *testing.T) {
 	s, h, m, clock := mailServer(t)
 	var a authResponse
