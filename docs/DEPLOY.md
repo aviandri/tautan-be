@@ -92,7 +92,8 @@ Trade-offs accepted with this choice:
 3. **SSL/TLS → Origin Server → Create certificate:** RSA, hostnames `<domain>, *.<domain>`, 15 years. On the VPS (step 4), save the certificate as `deploy/certs/origin.pem` and the key as `deploy/certs/origin-key.pem`. We use the Origin CA rather than Let's Encrypt because ACME HTTP-01 fails behind Cloudflare once *Always Use HTTPS* is on.
 4. **Caching:** keep the defaults. Cloudflare caches `/uploads/*.png|jpg|webp|avif` by extension, with the query string (`?w=`) in the key, and the API marks them `immutable`. **Never** add a "Cache Everything" rule on `api.`, because auth and editor responses must not be cached.
    - Cloudflare's Free plan ignores `Vary: Accept` on images, so the first format cached for a `?w=` URL is served to everyone. Every browser in tautan-fe's `browserslist` (Chrome/Edge/Firefox 111+, Safari 16.4+) decodes AVIF, so this is fine. For strict negotiation, add a Cache Rule: host `api.<domain>` AND path starts with `/uploads/` AND query contains `w=` → *Bypass cache*.
-5. Optional: under **Security → WAF → Rate limiting rules**, add 1 rule on `api.<domain>/api/v1/auth/*` (login brute force). The API rate-limits public endpoints itself.
+5. **Payment webhooks:** Xendit, Midtrans and Stripe POST to `https://api.<domain>/webhooks/{provider}/{profile_id}`. Caddy already proxies every path on `api.` to the API. Don't turn on *Bot Fight Mode* (it can't be bypassed per path on Free), and don't add a WAF challenge that covers `/webhooks/*`, because providers can't solve challenges. If you add WAF rules, add a *Skip* rule for URI path starts with `/webhooks/`.
+6. Optional: under **Security → WAF → Rate limiting rules**, add 1 rule on `api.<domain>/api/v1/auth/*` (login brute force). The API rate-limits public endpoints itself.
 
 ### 4. Configure and start
 
@@ -102,14 +103,14 @@ git clone --depth 1 https://github.com/aviandri/tautan-be.git src && cp -r src/d
 mkdir -p certs backups && chmod 700 certs
 $EDITOR certs/origin.pem certs/origin-key.pem       # paste from Cloudflare
 cp .env.example .env && chmod 600 .env
-for v in POSTGRES_PASSWORD JWT_SECRET REVALIDATE_SECRET; do sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env; done
+for v in POSTGRES_PASSWORD JWT_SECRET REVALIDATE_SECRET PAYMENTS_ENCRYPTION_KEY; do sed -i "s|^$v=.*|$v=$(openssl rand -hex 32)|" .env; done
 $EDITOR .env                                         # SITE_DOMAIN, API_DOMAIN, image tags, R2 (step 5)
 docker compose -f docker-compose.prod.yml up -d      # pulls the public images; no docker login needed
 docker compose -f docker-compose.prod.yml ps         # all healthy within ~30 s
 docker compose -f docker-compose.prod.yml logs -f api   # JSON logs: "migrations applied", "tautan api listening"
 ```
 
-The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=production` it refuses to start on unsafe config and logs which variable is wrong. `.env` is the only file holding secrets; back it up somewhere safe, such as a password manager.
+The API applies migrations on start (`MIGRATE_ON_START=true`). With `APP_ENV=production` it refuses to start on unsafe config and logs which variable is wrong. `.env` is the only file holding secrets; back it up somewhere safe, such as a password manager. `PAYMENTS_ENCRYPTION_KEY` matters most: without it, every creator's stored payment-provider keys are unreadable.
 
 ### 5. R2 for uploads and offsite backups
 
@@ -181,6 +182,10 @@ Replace `<domain>` with the real one. Run from a phone on mobile data where note
 **Performance (SPEC.md budget)**
 - ☐ PageSpeed Insights (mobile) on `https://<domain>/<username>`: Performance ≥ 90, LCP ≤ 1.8 s, CLS ≤ 0.05.
 - ☐ `curl -so /dev/null -w '%{time_starttransfer}\n' https://<domain>/<username>` from an Indonesian vantage point → ≤ 0.2 s when warm.
+
+**Payments** (once tautan-be #36 and its webhook PR are deployed)
+- ☐ The API starts with `APP_ENV=production` and logs no complaint about `PAYMENTS_ENCRYPTION_KEY`.
+- ☐ `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.<domain>/webhooks/xendit/00000000-0000-0000-0000-000000000000` returns the API's own 4xx JSON (not a Cloudflare challenge page or a 404 HTML from Caddy).
 
 **Operations**
 - ☐ `ls backups/` shows a dump less than 24 h old, and R2 `tautan-backups/db` has it after the cron run.

@@ -78,6 +78,15 @@ Every variable the two apps read, audited on 2026-11-18. Columns:
 | `GOOGLE_REDIRECT_URL` | | | – | The FE callback page, e.g. `https://tautan.id/auth/google/callback`. Register it in Google Cloud Console. |
 | `GOOGLE_ISSUER` | | | `https://accounts.google.com` | Only for tests (fake OIDC server). |
 
+### Payments (tautan-41)
+
+| Var | Req (prod) | Secret | Default | Notes |
+|---|---|---|---|---|
+| `PAYMENTS_ENCRYPTION_KEY` | ✅ | 🔒 | empty (payments off in dev; `make dev` uses a built-in dev key) | 32 bytes as base64 or hex (`openssl rand -base64 32`). Encrypts creators' Xendit/Midtrans/Stripe keys at rest (AES-256-GCM). **Required when `APP_ENV=production`**: the API refuses to start without it, and a malformed key stops startup. **Back it up**: if it's lost, every creator has to re-enter their keys. *Since #36.* |
+| `PAYMENTS_ENCRYPTION_KEYS_OLD` | | 🔒 | – | Comma-separated retired keys that stay readable during a rotation. A row is re-sealed with the current key on its next save. *Since #36.* |
+
+Provider webhooks arrive at `POST {PUBLIC_BASE_URL}/webhooks/{provider}/{profile_id}` on the API origin, outside `/api/v1`. That's why `PUBLIC_BASE_URL` must be the final public https API origin: creators paste that URL into their provider dashboards.
+
 ### Dev and test only
 
 | Var | Default | Notes |
