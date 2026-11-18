@@ -64,6 +64,7 @@ func Run(cfg config.Config) error {
 	defer stopWorkers()
 	go api.RunRemoteRefresher(workers)
 	go api.RunMailer(workers)
+	go api.RunPaymentsJanitor(workers)
 	go func() {
 		if err := api.ResumeImages(workers); err != nil {
 			slog.Error("resume image variants", "err", err)

@@ -853,6 +853,10 @@ from the stored card; the browser only says which items, how many and which opti
     elsewhere (letters, digits, spaces and dashes, max 12 characters).
   - The address is buyer personal data. Only the page owner sees it (order detail, CSV). It's never logged, never in
     redirects, and never sent to the payment provider.
+  - Retention: an hourly job clears the address of orders that were never paid (pending, expired or failed) 30 days
+    after their checkout closed. Paid and refunded orders keep it for the seller's records.
+  - In `orders.csv`, a phone number like `+6281234567890` keeps its `+`; other cells starting with `= + - @` are
+    still quoted (formula-safe).
 - The total is the lines plus the shipping fee. The provider gets each line plus a "Shipping" line, and the description
   "N items from @u · order CODE".
 - **Amount limits, checked before redirecting.** Providers that can't take the total are left out of the automatic

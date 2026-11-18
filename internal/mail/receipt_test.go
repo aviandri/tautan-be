@@ -29,3 +29,15 @@ func TestOrderReceipt(t *testing.T) {
 		t.Fatal("seller name not escaped in HTML")
 	}
 }
+
+func TestOrderSubjectsAreOneLine(t *testing.T) {
+	seller := "Kopi\r\nBcc: someone@example.com"
+	for _, m := range []Message{
+		OrderReceipt("b@example.com", Receipt{Seller: seller, Code: "K7Q2-M9XD", Total: "Rp 1"}),
+		OrderShipped("b@example.com", Shipped{Seller: seller, Code: "K7Q2-M9XD"}),
+	} {
+		if strings.ContainsAny(m.Subject, "\r\n") || !strings.Contains(m.Subject, "Kopi Bcc:") {
+			t.Fatalf("subject = %q", m.Subject)
+		}
+	}
+}

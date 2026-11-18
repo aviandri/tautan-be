@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,14 @@ import (
 // ---------- CSV ----------
 
 // csvCell neutralises spreadsheet formula injection (=, +, -, @, tab, CR prefixes).
+var csvPhoneRE = regexp.MustCompile(`^\+[0-9]{7,15}$`)
+
 func csvCell(v string) string {
+	// A phone number like +6281234567890 is digits only: nothing a spreadsheet
+	// can run, so it keeps its + instead of getting a visible quote.
+	if csvPhoneRE.MatchString(v) {
+		return v
+	}
 	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
 		return "'" + v
 	}

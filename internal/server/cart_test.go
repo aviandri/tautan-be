@@ -327,3 +327,39 @@ func TestNormShipping(t *testing.T) {
 		}
 	}
 }
+
+func TestPurgeStaleShipping(t *testing.T) {
+	fx := newShop(t)
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	shop := cartShop(t, fx)
+	mk := func(email string) string {
+		var o createOrderResp
+		do(t, fx.h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": shop.ID, "email": email, "shipping": address(),
+			"items": []map[string]any{{"item_id": "sticker"}}}).expect(201).json(&o)
+		return o.OrderID
+	}
+	stale, fresh, paid := mk("a@example.com"), mk("b@example.com"), mk("c@example.com")
+	ctx := context.Background()
+	_, _ = testPool.Exec(ctx, `UPDATE orders SET status = 'expired', expires_at = now() - interval '31 days' WHERE id = $1`, stale)
+	_, _ = testPool.Exec(ctx, `UPDATE orders SET status = 'expired', expires_at = now() - interval '29 days' WHERE id = $1`, fresh)
+	_, _ = testPool.Exec(ctx, `UPDATE orders SET status = 'paid', expires_at = now() - interval '90 days' WHERE id = $1`, paid)
+	n, err := fx.s.PurgeStaleShipping(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("purged %d, %v", n, err)
+	}
+	for id, want := range map[string]bool{stale: false, fresh: true, paid: true} {
+		var has bool
+		_ = testPool.QueryRow(ctx, `SELECT shipping IS NOT NULL FROM orders WHERE id = $1`, id).Scan(&has)
+		if has != want {
+			t.Fatalf("order %s keeps address = %v, want %v", id, has, want)
+		}
+	}
+}
+
+func TestCSVCellPhone(t *testing.T) {
+	for in, want := range map[string]string{"+6281234567890": "+6281234567890", "+1+1": "'+1+1", "=SUM(A1)": "'=SUM(A1)", "+62 812": "'+62 812", "081234": "081234"} {
+		if got := csvCell(in); got != want {
+			t.Fatalf("csvCell(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
