@@ -13,7 +13,11 @@ make test    # tests start their own throwaway embedded Postgres
 Go is expected at `~/.local/go` (the Makefile adds it to `PATH`). The first run downloads
 Postgres binaries (~10 MB) into `.devdata/cache`.
 
-Health check: `curl localhost:8080/api/v1/health` → `{"status":"ok"}`
+Health checks: `/livez` (process up, no DB), `/readyz` (DB reachable and not shutting down),
+and the older `/healthz` and `/api/v1/health` (DB ping).
+
+`api migrate` applies migrations and exits; `api healthcheck` probes `/livez` (for Docker
+`HEALTHCHECK` in the distroless image).
 
 ## Configuration (env)
 
@@ -29,6 +33,10 @@ Health check: `curl localhost:8080/api/v1/health` → `{"status":"ok"}`
 | `COOKIE_SECURE` | `false` | set `true` behind HTTPS |
 | `COUNTRY_HEADER` | `CF-IPCountry` | header holding the visitor's country code |
 | `APP_BASE_URL` | `http://localhost:3000` | public FE origin (page URL in vCards) |
+| `APP_ENV` | `development` | `production` refuses to start with unsafe settings (dev JWT secret, http URLs, `COOKIE_SECURE=false`) |
+| `LOG_FORMAT` / `LOG_LEVEL` | `text` (`json` in production) / `info` | structured logs via `log/slog` |
+| `MIGRATE_ON_START` | `true` | set `false` and run `api migrate` as a release step instead |
+| `SHUTDOWN_DELAY` / `SHUTDOWN_TIMEOUT` | `0s` / `15s` | on SIGTERM `/readyz` fails for the delay, then requests drain |
 | `TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP (rate limits); enable only behind your own proxy |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | (empty) | Google sign-in; the feature is off unless these and `GOOGLE_REDIRECT_URL` are set. The secret is a secret. |
 | `GOOGLE_REDIRECT_URL` | (empty) | the FE callback page, e.g. `http://localhost:3000/auth/google/callback` |

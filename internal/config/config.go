@@ -2,6 +2,9 @@
 package config
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -29,6 +32,14 @@ type Config struct {
 	GoogleClientSecret string
 	GoogleRedirectURL  string // the FE callback page, e.g. http://localhost:3000/auth/google/callback
 	GoogleIssuer       string // OIDC issuer used for discovery; tests point it at a fake server
+
+	// Operations.
+	Env             string        // APP_ENV: "development" (default) or "production" (strict Validate)
+	LogFormat       string        // "json" (default in production) or "text"
+	LogLevel        string        // debug | info | warn | error
+	MigrateOnStart  bool          // apply pending migrations before serving (default true)
+	ShutdownDelay   time.Duration // after SIGTERM: report not-ready for this long before closing listeners
+	ShutdownTimeout time.Duration // max time to drain in-flight requests
 }
 
 // GoogleEnabled reports whether Google sign-in is configured.
@@ -36,14 +47,17 @@ func (c Config) GoogleEnabled() bool {
 	return c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GoogleRedirectURL != ""
 }
 
+// Production reports whether APP_ENV=production.
+func (c Config) Production() bool { return c.Env == "production" }
+
 func Load() Config {
 	c := Config{
 		Addr:          env("ADDR", ":8080"),
 		DatabaseURL:   env("DATABASE_URL", ""),
-		JWTSecret:     env("JWT_SECRET", "dev-secret-change-me"),
+		JWTSecret:     env("JWT_SECRET", devJWTSecret),
 		AccessTTL:     dur("ACCESS_TTL", 15*time.Minute),
 		RefreshTTL:    dur("REFRESH_TTL", 30*24*time.Hour),
-		CORSOrigins:   strings.Split(env("CORS_ORIGINS", "http://localhost:3000"), ","),
+		CORSOrigins:   list(env("CORS_ORIGINS", "http://localhost:3000")),
 		UploadDir:     env("UPLOAD_DIR", "./uploads"),
 		PublicBaseURL: strings.TrimRight(env("PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 		CookieSecure:  env("COOKIE_SECURE", "false") == "true",
@@ -57,7 +71,51 @@ func Load() Config {
 	c.GoogleClientSecret = env("GOOGLE_CLIENT_SECRET", "")
 	c.GoogleRedirectURL = env("GOOGLE_REDIRECT_URL", "")
 	c.GoogleIssuer = strings.TrimRight(env("GOOGLE_ISSUER", "https://accounts.google.com"), "/")
+	c.Env = strings.ToLower(env("APP_ENV", "development"))
+	defFormat := "text"
+	if c.Production() {
+		defFormat = "json"
+	}
+	c.LogFormat = strings.ToLower(env("LOG_FORMAT", defFormat))
+	c.LogLevel = strings.ToLower(env("LOG_LEVEL", "info"))
+	c.MigrateOnStart = env("MIGRATE_ON_START", "true") == "true"
+	c.ShutdownDelay = dur("SHUTDOWN_DELAY", 0)
+	c.ShutdownTimeout = dur("SHUTDOWN_TIMEOUT", 15*time.Second)
 	return c
+}
+
+const devJWTSecret = "dev-secret-change-me"
+
+// Validate rejects settings that are unsafe or broken in production. In
+// development it accepts everything, so `make dev` keeps working with no env.
+func (c Config) Validate() error {
+	var errs []error
+	if c.DatabaseURL == "" {
+		errs = append(errs, errors.New("DATABASE_URL is required"))
+	}
+	if !c.Production() {
+		return errors.Join(errs...)
+	}
+	if c.JWTSecret == devJWTSecret || len(c.JWTSecret) < 32 {
+		errs = append(errs, errors.New("JWT_SECRET must be set to a random value of at least 32 characters"))
+	}
+	for k, v := range map[string]string{"PUBLIC_BASE_URL": c.PublicBaseURL, "APP_BASE_URL": c.AppBaseURL} {
+		if u, err := url.Parse(v); err != nil || u.Scheme != "https" || u.Host == "" {
+			errs = append(errs, fmt.Errorf("%s must be an https:// URL (got %q)", k, v))
+		}
+	}
+	for _, o := range c.CORSOrigins {
+		if u, err := url.Parse(strings.TrimSpace(o)); err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" {
+			errs = append(errs, fmt.Errorf("CORS_ORIGINS entries must be https origins without a path (got %q)", o))
+		}
+	}
+	if !c.CookieSecure {
+		errs = append(errs, errors.New("COOKIE_SECURE must be true in production"))
+	}
+	if c.LogFormat != "json" && c.LogFormat != "text" {
+		errs = append(errs, fmt.Errorf("LOG_FORMAT must be json or text (got %q)", c.LogFormat))
+	}
+	return errors.Join(errs...)
 }
 
 func env(k, def string) string {
@@ -72,4 +130,15 @@ func dur(k string, def time.Duration) time.Duration {
 		return d
 	}
 	return def
+}
+
+// list splits a comma-separated value, trimming spaces and dropping empties.
+func list(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

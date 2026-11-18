@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os/signal"
 	"syscall"
@@ -13,16 +13,26 @@ import (
 	"github.com/aviandri/tautan-be/internal/db"
 )
 
-// Run migrates the database and serves HTTP until SIGINT/SIGTERM.
+// Run serves HTTP until SIGINT/SIGTERM, migrating first when MIGRATE_ON_START
+// is on.
+//
+// Shutdown order: /readyz starts returning 503, then after SHUTDOWN_DELAY the
+// listener closes and in-flight requests get up to SHUTDOWN_TIMEOUT to finish.
+// Pending revalidate webhooks are then sent and background workers stop.
+// Images still being encoded stay ready=false and are re-queued on the next
+// start (ResumeImages).
 func Run(cfg config.Config) error {
-	if cfg.DatabaseURL == "" {
-		return errors.New("DATABASE_URL is required")
+	if err := cfg.Validate(); err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	if err := db.Migrate(cfg.DatabaseURL); err != nil {
-		return err
+	if cfg.MigrateOnStart {
+		if err := db.Migrate(cfg.DatabaseURL); err != nil {
+			return err
+		}
+		slog.Info("migrations applied")
 	}
 	pool, err := db.Connect(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -31,16 +41,25 @@ func Run(cfg config.Config) error {
 	defer pool.Close()
 
 	api := New(cfg, pool)
-	go api.RunRemoteRefresher(ctx)
+	workers, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	go api.RunRemoteRefresher(workers)
 	go func() {
-		if err := api.ResumeImages(ctx); err != nil {
-			log.Printf("resume image variants: %v", err)
+		if err := api.ResumeImages(workers); err != nil {
+			slog.Error("resume image variants", "err", err)
 		}
 	}()
-	srv := &http.Server{Addr: cfg.Addr, Handler: api.Routes(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           api.Routes(),
+		ReadHeaderTimeout: 10 * time.Second,
+		// No Read/WriteTimeout: 25 MB file uploads and downloads on slow
+		// mobile links can take minutes. The reverse proxy in front bounds them.
+		IdleTimeout: 120 * time.Second,
+	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("tautan api listening on %s", cfg.Addr)
+		slog.Info("tautan api listening", "addr", cfg.Addr, "env", cfg.Env)
 		errCh <- srv.ListenAndServe()
 	}()
 	select {
@@ -51,7 +70,15 @@ func Run(cfg config.Config) error {
 		return err
 	case <-ctx.Done():
 	}
-	shCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	stop() // a second signal kills the process immediately
+	slog.Info("shutting down", "delay", cfg.ShutdownDelay.String(), "timeout", cfg.ShutdownTimeout.String())
+	api.SetDraining()
+	time.Sleep(cfg.ShutdownDelay)
+	shCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
-	return srv.Shutdown(shCtx)
+	err = srv.Shutdown(shCtx)
+	stopWorkers()
+	api.FlushPending()
+	slog.Info("shutdown complete", "err", err)
+	return err
 }

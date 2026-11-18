@@ -7,11 +7,13 @@ import (
 
 	"github.com/aviandri/tautan-be/internal/config"
 	"github.com/aviandri/tautan-be/internal/devdb"
+	"github.com/aviandri/tautan-be/internal/logx"
 	"github.com/aviandri/tautan-be/internal/server"
 )
 
 func main() {
 	cfg := config.Load()
+	logx.Setup(cfg.LogFormat, cfg.LogLevel)
 	if cfg.DatabaseURL == "" {
 		pg, err := devdb.Start()
 		if err != nil {
