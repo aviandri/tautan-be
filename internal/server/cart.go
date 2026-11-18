@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -24,6 +25,9 @@ import (
 const (
 	maxCartLines = 20
 	maxShipQty   = 20
+	// shippingRetention: an unpaid order's address is cleared this long after
+	// its checkout closed (late payments land within orderGrace, 7 days).
+	shippingRetention = 30 * 24 * time.Hour
 )
 
 // ShippingAddress is the buyer's delivery address. It's personal data: only
@@ -242,7 +246,11 @@ func (s *Server) handleShipOrder(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		first := cur.Fulfilment != nil && *cur.Fulfilment == "unfulfilled"
+		// Re-check under the lock: a refund may have landed since the first read.
+		if cur.Fulfilment == nil || cur.Status != payments.StatusPaid {
+			return errNotShippable
+		}
+		first := *cur.Fulfilment == "unfulfilled"
 		o, err = scanOrder(tx.QueryRow(ctx, `UPDATE orders SET fulfilment = 'shipped', tracking = $2,
 			shipped_at = COALESCE(shipped_at, now()), updated_at = now() WHERE id = $1 RETURNING `+orderCols, o.ID, in.Tracking))
 		if err != nil || !first {
@@ -255,11 +263,46 @@ func (s *Server) handleShipOrder(w http.ResponseWriter, r *http.Request) {
 		}
 		return s.enqueueShipped(ctx, tx, o)
 	})
+	if errors.Is(err, errNotShippable) {
+		writeError(w, http.StatusConflict, "not_shippable", "only paid orders with items to ship can be marked shipped")
+		return
+	}
 	if err != nil {
 		s.internalError(w, err)
 		return
 	}
 	s.writeOwnerOrder(w, r, o)
+}
+
+var errNotShippable = errors.New("not shippable")
+
+// PurgeStaleShipping clears the shipping address (buyer personal data) of
+// orders that were never paid, shippingRetention after their checkout closed.
+// Paid and refunded orders keep it: the seller needs it to ship and for
+// their records.
+func (s *Server) PurgeStaleShipping(ctx context.Context) (int64, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE orders SET shipping = NULL, updated_at = now()
+		WHERE shipping IS NOT NULL AND status IN ('pending', 'expired', 'failed') AND expires_at < $1`,
+		s.now().Add(-shippingRetention))
+	return tag.RowsAffected(), err
+}
+
+// RunPaymentsJanitor runs PurgeStaleShipping hourly until ctx ends.
+func (s *Server) RunPaymentsJanitor(ctx context.Context) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		if n, err := s.PurgeStaleShipping(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("payments: purge stale shipping addresses", "err", err)
+		} else if n > 0 {
+			slog.Info("payments: cleared shipping addresses of unpaid orders", "count", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 func (s *Server) enqueueShipped(ctx context.Context, tx pgx.Tx, o orderRow) error {

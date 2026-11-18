@@ -81,7 +81,7 @@ func OrderReceipt(to string, r Receipt) Message {
 		"Keep this email: the link opens your order any time. You paid "+r.Seller+" directly; Tautan just hosts their page.")
 	return Message{
 		To:      to,
-		Subject: fmt.Sprintf("Your order from %s (%s)", r.Seller, r.Code),
+		Subject: fmt.Sprintf("Your order from %s (%s)", oneLine(r.Seller, 80), r.Code),
 		Text:    strings.Join(lines, "\n"),
 		HTML:    h.String(),
 	}
@@ -139,7 +139,7 @@ func OrderShipped(to string, s Shipped) Message {
 	lines = append(lines, "", "View your order: "+s.Link)
 	return Message{
 		To:      to,
-		Subject: fmt.Sprintf("Your order from %s has shipped (%s)", s.Seller, s.Code),
+		Subject: fmt.Sprintf("Your order from %s has shipped (%s)", oneLine(s.Seller, 80), s.Code),
 		Text:    strings.Join(lines, "\n"),
 		HTML:    h.String(),
 	}
