@@ -694,6 +694,13 @@ func (s *Server) handleGiveawayDraw(w http.ResponseWriter, r *http.Request) {
 		s.writeErr(w, err)
 		return
 	}
+	// {notify?: bool}, default true: email the new winner.
+	in := struct {
+		Notify *bool `json:"notify"`
+	}{}
+	if r.ContentLength > 0 && !decodeJSON(w, r, &in) {
+		return
+	}
 	var d GiveawayData
 	_ = json.Unmarshal(b.Data, &d)
 	ctx, now := r.Context(), s.now()
@@ -728,7 +735,50 @@ func (s *Server) handleGiveawayDraw(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": n, "winner": gw})
+	notified := false
+	if in.Notify == nil || *in.Notify {
+		if notified, err = s.emailWinner(ctx, b, d, gw.Email); err != nil {
+			s.internalError(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": n, "winner": gw, "notified": notified})
+}
+
+const (
+	// Winner emails per card per day: redraws are fine, a mail cannon isn't.
+	winnerEmailsPerCard = 5
+	// Winner emails one address can get per day, across all pages.
+	winnerEmailsPerRecipient = 2
+)
+
+// emailWinner queues the "you won" email when the owner's address is
+// confirmed and the caps allow; it reports whether it was queued.
+func (s *Server) emailWinner(ctx context.Context, b Block, d GiveawayData, to string) (bool, error) {
+	if !s.winnerCardLimiter.Allow(b.ID) {
+		return false, nil
+	}
+	var username, display string
+	var verified bool
+	var recent int
+	err := s.db.QueryRow(ctx, `SELECT p.username, p.display_name, u.email_verified_at IS NOT NULL,
+		(SELECT count(*) FROM email_outbox o WHERE o.kind = 'giveaway_winner' AND o.to_email = $2 AND o.created_at > $3)
+		FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, b.ProfileID, to, s.now().Add(-24*time.Hour)).
+		Scan(&username, &display, &verified, &recent)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!verified || recent >= winnerEmailsPerRecipient)) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if display == "" {
+		display = "@" + username
+	}
+	m := mail.GiveawayWinner(to, display, s.cfg.AppBaseURL+"/"+username, d.Title, d.Prize)
+	if err := s.enqueueEmail(ctx, s.db, "giveaway_winner", m); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // winnerDisplay is "Budi S." from a name, else a masked email "bu***@gmail.com".
