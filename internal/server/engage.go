@@ -450,6 +450,12 @@ func (s *Server) handleLeadDownload(w http.ResponseWriter, r *http.Request) {
 	local := strings.TrimPrefix(d.FileURL, s.cfg.PublicBaseURL)
 	if strings.HasPrefix(local, "/uploads/") {
 		name := path.Base(local)
+		// Only public stored names: a lead magnet must never hand out a
+		// private p_ deliverable (security audit 2026-11, L1).
+		if !storedNameRE.MatchString(name) {
+			writeError(w, http.StatusNotFound, "not_found", "file not found")
+			return
+		}
 		f, err := s.uploads().Open(r.Context(), name)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "not_found", "file not found")
