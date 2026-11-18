@@ -29,12 +29,13 @@ type fakeCheckout struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
 	status map[string]string // provider ref → provider-native status
+	amount map[string]string // provider ref → raw JSON amount override (Xendit) / gross_amount (Midtrans)
 	last   map[string]string // provider → last create body
 	n      int
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
-	f := &fakeCheckout{t: t, status: map[string]string{}, last: map[string]string{}}
+	f := &fakeCheckout{t: t, status: map[string]string{}, amount: map[string]string{}, last: map[string]string{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -44,6 +45,12 @@ func (f *fakeCheckout) set(ref, st string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.status[ref] = st
+}
+
+func (f *fakeCheckout) setAmount(ref, amt string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.amount[ref] = amt
 }
 
 func (f *fakeCheckout) serve(w http.ResponseWriter, r *http.Request) {
@@ -77,7 +84,15 @@ func (f *fakeCheckout) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(404)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": st, "amount": 85000, "currency": "IDR"})
+		amt := json.RawMessage(`85000`)
+		cur := "IDR"
+		if a, ok := f.amount[id]; ok {
+			amt, cur = json.RawMessage(a), ""
+			if a != "0" {
+				cur = "IDR"
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "status": st, "amount": amt, "currency": cur})
 	// Midtrans
 	case r.Method == "POST" && p == "/snap/v1/transactions":
 		var in struct {
@@ -98,7 +113,12 @@ func (f *fakeCheckout) serve(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, `{"status_code":"404","status_message":"Transaction doesn't exist."}`)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"status_code": "200", "order_id": id, "gross_amount": "85000.00", "transaction_status": st})
+		gross := "85000.00"
+		if a, ok := f.amount[id]; ok {
+			gross = a
+		}
+		code := map[string]string{"settlement": "200", "capture": "200", "pending": "201", "expire": "407", "deny": "202", "cancel": "200", "refund": "200"}[st]
+		_ = json.NewEncoder(w).Encode(map[string]any{"status_code": code, "order_id": id, "gross_amount": gross, "transaction_status": st})
 	// Stripe
 	case r.Method == "POST" && p == "/v1/checkout/sessions":
 		f.n++
@@ -382,34 +402,54 @@ func TestOrderMidtransWebhooks(t *testing.T) {
 	}
 	// Forged signature.
 	midtransHook(t, h, fx.pid, "SB-Mid-server-other", o.OrderID, "settlement", "200", "85000.00", "tx1").expect(401)
-	// A paid amount that doesn't match the order is refused.
-	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "1000.00", "tx1").expect(200)
+	// Blocker: a genuinely signed notification with its (unsigned)
+	// transaction_status edited to settlement. Midtrans's API says pending.
+	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "201", "85000.00", "tx1").expect(200)
+	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "85000.00", "tx1").expect(200)
+	if st := fx.order(t, o).Order.Status; st != "pending" {
+		t.Fatalf("tampered status marked %s", st)
+	}
+	// The provider reports a different amount: refused.
+	fx.f.set(o.OrderID, "settlement")
+	fx.f.setAmount(o.OrderID, "1000.00")
+	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "85000.00", "tx1").expect(200)
 	if st := fx.order(t, o).Order.Status; st != "pending" {
 		t.Fatalf("mismatched amount marked %s", st)
 	}
 	var note string
-	_ = testPool.QueryRow(context.Background(), `SELECT status FROM payment_events WHERE event_key = 'tx1:settlement:200'`).Scan(&note)
+	_ = testPool.QueryRow(context.Background(), `SELECT status FROM payment_events WHERE order_id = $1 ORDER BY id DESC LIMIT 1`, o.OrderID).Scan(&note)
 	if note != "amount_mismatch" {
 		t.Fatalf("event note = %q", note)
 	}
 	// Expired, then a late payment wins.
+	fx.f.setAmount(o.OrderID, "85000.00")
+	fx.f.set(o.OrderID, "expire")
 	midtransHook(t, h, fx.pid, key, o.OrderID, "expire", "407", "85000.00", "tx2").expect(200)
 	if st := fx.order(t, o).Order.Status; st != "expired" {
 		t.Fatalf("status = %s", st)
 	}
+	fx.f.set(o.OrderID, "settlement")
 	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "85000.00", "tx2").expect(200)
 	if st := fx.order(t, o).Order.Status; st != "paid" {
 		t.Fatalf("late payment status = %s", st)
 	}
-	// An expiry after payment is ignored.
+	// Replaying it is a duplicate; an expiry after payment is ignored.
+	if res := midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "85000.00", "tx2").expect(200).Body.String(); !strings.Contains(res, "duplicate") {
+		t.Fatalf("replay = %s", res)
+	}
+	fx.f.set(o.OrderID, "expire")
 	midtransHook(t, h, fx.pid, key, o.OrderID, "expire", "407", "85000.00", "tx3").expect(200)
 	if st := fx.order(t, o).Order.Status; st != "paid" {
 		t.Fatalf("status went backwards: %s", st)
 	}
-	// Unknown order: acknowledged so the provider stops retrying.
+	// Unknown order (Midtrans has never heard of it): acknowledged.
 	if res := midtransHook(t, h, fx.pid, key, "11111111-1111-4111-8111-111111111111", "settlement", "200", "85000.00", "tx9").expect(200).Body.String(); !strings.Contains(res, "unknown_order") {
 		t.Fatalf("unknown = %s", res)
 	}
+	// The provider can't be reached: 502 so Midtrans retries.
+	fx.s.PaymentOptions.BaseURLs["midtrans_api"] = "http://127.0.0.1:1"
+	midtransHook(t, h, fx.pid, key, o.OrderID, "settlement", "200", "85000.00", "tx4").expect(502)
+	fx.s.PaymentOptions.BaseURLs["midtrans_api"] = fx.f.srv.URL
 	// Webhook for a provider the page hasn't connected, or a bad profile id.
 	do(t, h, "POST", "/webhooks/xendit/"+fx.pid, `{}`).expect(404)
 	do(t, h, "POST", "/webhooks/xendit/not-a-uuid", `{}`).expect(404)
@@ -632,5 +672,150 @@ func TestOrderCodes(t *testing.T) {
 		if nextStatus(c.cur, c.want) != c.ok {
 			t.Errorf("%s → %s = %v", c.cur, c.want, !c.ok)
 		}
+	}
+}
+
+func TestOrderXenditWebhookConfirms(t *testing.T) {
+	fx := newShop(t)
+	h := fx.h
+	fx.connect(t, "xendit", map[string]any{"mode": "sandbox", "secret_key": "xnd_development_good", "webhook_secret": "cbtok"})
+	var o createOrderResp
+	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "x@example.com"}).expect(201).json(&o)
+	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.xendit.test/")
+	hook := func(body string) string {
+		t.Helper()
+		return do(t, h, "POST", "/webhooks/xendit/"+fx.pid, body, withHeader("x-callback-token", "cbtok")).expect(200).Body.String()
+	}
+	paidNoAmount := `{"id":"` + ref + `","external_id":"` + o.OrderID + `","status":"PAID"}`
+	// Blocker: a PAID callback (token only, no amounts) while Xendit says pending.
+	hook(paidNoAmount)
+	if st := fx.order(t, o).Order.Status; st != "pending" {
+		t.Fatalf("unconfirmed PAID marked %s", st)
+	}
+	// Xendit says PAID but reports no amount: still not paid.
+	fx.f.set(ref, "PAID")
+	fx.f.setAmount(ref, "0")
+	hook(paidNoAmount)
+	if st := fx.order(t, o).Order.Status; st != "pending" {
+		t.Fatalf("PAID without amount marked %s", st)
+	}
+	// Confirmed with the right amount and currency: paid.
+	fx.f.setAmount(ref, "85000")
+	hook(paidNoAmount)
+	if st := fx.order(t, o).Order.Status; st != "paid" {
+		t.Fatalf("confirmed PAID = %s", st)
+	}
+	if res := hook(paidNoAmount); !strings.Contains(res, "duplicate") {
+		t.Fatalf("replay = %s", res)
+	}
+}
+
+func TestOrderStrictAmounts(t *testing.T) {
+	fx := newShop(t)
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	var o createOrderResp
+	do(t, fx.h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "s@example.com"}).expect(201).json(&o)
+	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
+	for i, obj := range []map[string]any{
+		{"payment_status": "paid", "client_reference_id": o.OrderID},                                             // no amount at all
+		{"payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 8500000},                    // no currency
+		{"payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 8500000, "currency": "usd"}, // wrong currency
+		{"payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 100, "currency": "idr"},     // wrong amount
+	} {
+		obj["id"], obj["status"] = ref, "complete"
+		stripeHook(t, fx.h, fx.pid, "whsec_s", map[string]any{"id": "evt_s" + strconv.Itoa(i), "type": "checkout.session.completed", "data": map[string]any{"object": obj}}).expect(200)
+		if st := fx.order(t, o).Order.Status; st != "pending" {
+			t.Fatalf("case %d marked %s", i, st)
+		}
+	}
+}
+
+func TestPrivateDeliverables(t *testing.T) {
+	fx := newShop(t)
+	h := fx.h
+	upload := func(tok, kind string) string {
+		t.Helper()
+		req := multipartReq(t, "file", "Guide.pdf", []byte("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF"), tok)
+		req.URL.RawQuery = "kind=" + kind
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var up struct {
+			URL string `json:"url"`
+		}
+		resp{rec, t}.expect(201).json(&up)
+		return up.URL
+	}
+	pathOf := func(u string) string { return strings.TrimPrefix(u, "https://api.tautan.test") }
+
+	// A public upload gets a price: the card now points at a private copy.
+	pub := upload(fx.tok, "file")
+	var b Block
+	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide", "url": pub, "price": 500000}}, bearer(fx.tok)).expect(200).json(&b)
+	var d FileData
+	_ = json.Unmarshal(b.Data, &d)
+	if d.URL == pub || !strings.Contains(d.URL, "/uploads/p_") {
+		t.Fatalf("not privatized: %s", d.URL)
+	}
+	do(t, h, "GET", pathOf(d.URL), nil).expect(404) // never served publicly
+	// Saving again keeps the same private file.
+	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide 2", "url": d.URL, "price": 500000}}, bearer(fx.tok)).expect(200).json(&b)
+	if !strings.Contains(string(b.Data), d.URL) {
+		t.Fatalf("private url changed on re-save: %s", b.Data)
+	}
+	// A direct private upload works for checkout products, and isn't public.
+	priv := upload(fx.tok, "private")
+	if !strings.Contains(priv, "/uploads/p_") {
+		t.Fatalf("private upload url = %s", priv)
+	}
+	do(t, h, "GET", pathOf(priv), nil).expect(404)
+	do(t, h, "PATCH", "/api/v1/blocks/"+fx.product.ID, map[string]any{"data": map[string]any{
+		"name": "E-book", "price": 1999, "currency": "USD", "images": []string{},
+		"action": map[string]any{"kind": "checkout", "download": map[string]any{"url": priv}}}}, bearer(fx.tok)).expect(200)
+	// Another seller can't reference it.
+	other := signup(t, h, "thief")
+	tab := editor(t, h, other.AccessToken).Tabs[0]
+	r := do(t, h, "POST", "/api/v1/blocks", map[string]any{"tab_id": tab.ID, "type": "file", "data": map[string]any{"title": "x", "url": priv, "price": 100}}, bearer(other.AccessToken)).expect(400)
+	if !strings.Contains(r.Body.String(), "file not found") {
+		t.Fatalf("cross-profile private file: %s", r.Body)
+	}
+	// The buyer still gets it through the signed link; Range requests don't count.
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	var o createOrderResp
+	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "p@example.com"}).expect(201).json(&o)
+	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
+	stripeHook(t, h, fx.pid, "whsec_s", map[string]any{"id": "evt_p", "type": "checkout.session.completed", "data": map[string]any{"object": map[string]any{
+		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 500000, "currency": "idr"}}}).expect(200)
+	dl := pathOf(fx.order(t, o).Downloads[0].URL)
+	do(t, h, "GET", dl, nil).expect(200)
+	do(t, h, "GET", dl, nil, withHeader("Range", "bytes=10-")).expect(206)
+	do(t, h, "GET", dl, nil, withHeader("Range", "bytes=20-30")).expect(206)
+	var n int
+	_ = testPool.QueryRow(context.Background(), `SELECT downloads FROM orders WHERE id = $1`, o.OrderID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("downloads counted = %d, want 1", n)
+	}
+}
+
+func TestReceiptCaps(t *testing.T) {
+	fx := newShop(t)
+	mailer := &captureMailer{}
+	fx.s.mailer = mailer
+	fx.s.receiptToLimiter = newRateLimiter(1, time.Hour)
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	_, _ = fx.s.DeliverPending(context.Background())
+	mailer.take()
+	for i := 0; i < 3; i++ {
+		var o createOrderResp
+		do(t, fx.h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "same@example.com"}).expect(201).json(&o)
+		ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
+		stripeHook(t, fx.h, fx.pid, "whsec_s", map[string]any{"id": "evt_c" + strconv.Itoa(i), "type": "checkout.session.completed", "data": map[string]any{"object": map[string]any{
+			"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 8500000, "currency": "idr"}}}).expect(200)
+		if st := fx.order(t, o).Order.Status; st != "paid" {
+			t.Fatalf("order %d = %s", i, st) // the cap never blocks the order itself
+		}
+	}
+	_, _ = fx.s.DeliverPending(context.Background())
+	if sent := mailer.take(); len(sent) != 1 {
+		t.Fatalf("receipts sent = %d, want 1 (capped per recipient)", len(sent))
 	}
 }

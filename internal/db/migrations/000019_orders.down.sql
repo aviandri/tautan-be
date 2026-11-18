@@ -1,2 +1,1 @@
-DROP TABLE IF EXISTS payment_events;
-DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS private_uploads;

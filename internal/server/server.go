@@ -34,6 +34,8 @@ type Server struct {
 	providerTestLimiter *rateLimiter
 	orderLimiter        *rateLimiter
 	lookupLimiter       *rateLimiter
+	receiptPageLimiter  *rateLimiter
+	receiptToLimiter    *rateLimiter
 	// PaymentOptions configures provider adapters (tests point them at fakes).
 	PaymentOptions payments.Options
 	fetcher        *safeFetcher
@@ -77,6 +79,8 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		providerTestLimiter: newRateLimiter(20, 10*time.Minute),
 		orderLimiter:        newRateLimiter(10, 10*time.Minute),
 		lookupLimiter:       newRateLimiter(10, 10*time.Minute),
+		receiptPageLimiter:  newRateLimiter(60, time.Hour),
+		receiptToLimiter:    newRateLimiter(5, time.Hour),
 	}
 	sealer, err := payments.NewSealer(cfg.PaymentsEncryptionKey, cfg.PaymentsEncryptionKeysOld)
 	if err != nil {

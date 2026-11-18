@@ -108,12 +108,12 @@ func TestXenditWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Status != StatusPaid || ev.OrderID != "order-1" || ev.Ref != "inv_1" || ev.Amount != 17000000 || ev.Currency != "IDR" || ev.Key != "inv_1:PAID" {
+	if ev.Status != StatusPaid || ev.OrderID != "order-1" || ev.Ref != "inv_1" || ev.Amount != 17000000 || ev.Currency != "IDR" || ev.Key != "inv:inv_1" || !ev.Confirm {
 		t.Fatalf("event = %+v", ev)
 	}
 	req.Header.Set("webhook-id", "wh_9")
 	ev, _ = p.VerifyWebhook(req, []byte(`{"id":"inv_1","external_id":"order-1","status":"EXPIRED","amount":170000}`))
-	if ev.Status != StatusExpired || ev.Key != "wh:wh_9" {
+	if ev.Status != StatusExpired || ev.Key != "inv:inv_1" {
 		t.Fatalf("expired event = %+v", ev)
 	}
 	// No stored token: every delivery is rejected.
@@ -217,7 +217,7 @@ func TestMidtransWebhook(t *testing.T) {
 	}{
 		{"settlement", "", "200", StatusPaid},
 		{"capture", "accept", "200", StatusPaid},
-		{"capture", "challenge", "201", StatusPending},
+		{"capture", "challenge", "200", StatusPending},
 		{"pending", "", "201", StatusPending},
 		{"expire", "", "407", StatusExpired},
 		{"deny", "", "202", StatusFailed},
@@ -229,9 +229,18 @@ func TestMidtransWebhook(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", c.status, err)
 		}
-		if ev.Status != c.want || ev.OrderID != "order-1" || ev.Amount != 17000000 || ev.Key != "tx-9:"+c.status+":"+c.code {
+		// The key uses only signed fields; the status still needs GetStatus.
+		if ev.Status != c.want || ev.OrderID != "order-1" || ev.Amount != 17000000 || ev.Key != "order-1:"+c.code+":170000.00" || !ev.Confirm {
 			t.Fatalf("%s: event = %+v", c.status, ev)
 		}
+	}
+	// A genuine 201 "pending" notification re-labelled as settlement: the
+	// signature still verifies (status isn't signed) but status_code 201 can't be paid.
+	if ev, err := p.VerifyWebhook(req, mk("settlement", "", "201", "")); err != nil || ev.Status == StatusPaid {
+		t.Fatalf("relabelled 201 = %+v %v", ev, err)
+	}
+	if ev, err := p.VerifyWebhook(req, mk("capture", "accept", "202", "")); err != nil || ev.Status == StatusPaid {
+		t.Fatalf("relabelled 202 capture = %+v %v", ev, err)
 	}
 	if _, err := p.VerifyWebhook(req, mk("settlement", "", "200", midtransSig("order-1", "200", "170000.00", "other-key"))); err != ErrBadSignature {
 		t.Fatalf("forged signature err = %v", err)
@@ -247,6 +256,10 @@ func TestMidtransWebhook(t *testing.T) {
 func TestMidtransStatusAndTest(t *testing.T) {
 	f := newFakeAPI(t)
 	f.on("GET /v2/order-1/status", 200, `{"status_code":"200","order_id":"order-1","gross_amount":"50000.00","transaction_status":"settlement"}`)
+	f.on("GET /v2/order-x/status", 200, `{"status_code":"407","order_id":"order-x","gross_amount":"50000.00","transaction_status":"expire"}`)
+	if ev, err := mustNew(t, Midtrans, Sandbox, Credentials{SecretKey: "SB-Mid-server-k"}, opts(f)).GetStatus(ctx, "order-x"); err != nil || ev.Status != StatusExpired {
+		t.Fatalf("expired status = %+v %v", ev, err)
+	}
 	f.on("GET /v2/tautan-connection-test/status", 404, `{"status_code":"404","status_message":"Transaction doesn't exist."}`)
 	p := mustNew(t, Midtrans, Sandbox, Credentials{SecretKey: "SB-Mid-server-k"}, opts(f))
 	ev, err := p.GetStatus(ctx, "order-1")

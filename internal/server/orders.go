@@ -781,11 +781,17 @@ func (s *Server) handleOrderDownload(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	// Count the download and check the order in one statement.
+	// A fresh GET counts as a download; HEAD and resumed or partial Range
+	// requests (download managers, video seeking) don't. Counting and the
+	// paid/limit check happen in one statement.
+	inc := 0
+	if r.Method == http.MethodGet && countsAsDownload(r.Header.Get("Range")) {
+		inc = 1
+	}
 	var items []orderItem
-	err = s.db.QueryRow(ctx, `UPDATE orders SET downloads = downloads + 1
+	err = s.db.QueryRow(ctx, `UPDATE orders SET downloads = downloads + $4
 		WHERE id = $1 AND profile_id = $2 AND status = 'paid' AND downloads < $3 RETURNING items`,
-		parts[1], pid, maxOrderDownloads).Scan(&items)
+		parts[1], pid, maxOrderDownloads, inc).Scan(&items)
 	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
 		var status string
 		var n int
@@ -809,6 +815,12 @@ func (s *Server) handleOrderDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveDownload(w, r, *items[index].Download)
+}
+
+// countsAsDownload: no Range, or a Range starting at byte 0.
+func countsAsDownload(rng string) bool {
+	rng = strings.TrimSpace(rng)
+	return rng == "" || strings.HasPrefix(rng, "bytes=0-")
 }
 
 var unsafeFileName = regexp.MustCompile(`[^\w.\- ()]+`)
@@ -878,6 +890,30 @@ func (s *Server) handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 		// e.g. a Stripe test event while the page is in live mode.
 		writeJSON(w, http.StatusOK, map[string]string{"result": "ignored", "reason": "mode_mismatch"})
 		return
+	}
+	if ev.Confirm {
+		// The payload's status isn't authenticated (Midtrans, Xendit): treat the
+		// webhook as a trigger and act on what the provider's API says, with the
+		// creator's own key.
+		cctx, cancel := context.WithTimeout(ctx, providerTimeout)
+		st, err := p.GetStatus(cctx, ev.Ref)
+		cancel()
+		if errors.Is(err, payments.ErrNotFound) {
+			writeJSON(w, http.StatusOK, map[string]string{"result": "unknown_order"})
+			return
+		}
+		if err != nil {
+			// 502: the provider retries the notification later.
+			writeError(w, http.StatusBadGateway, "provider_unreachable", "couldn't confirm the payment status with the provider")
+			return
+		}
+		if st.OrderID == "" {
+			st.OrderID = ev.OrderID
+		}
+		// The key is made of what the provider confirmed, so a later, different
+		// confirmed state (e.g. the amount now reported) isn't a duplicate.
+		st.Key = fmt.Sprintf("%s:%s:%s:%d%s", ev.Key, st.Type, st.Status, st.Amount, st.Currency)
+		ev = st
 	}
 
 	var result string
@@ -979,7 +1015,9 @@ func (s *Server) applyEventTx(ctx context.Context, tx pgx.Tx, orderID string, ev
 		o.PaymentRef = &ev.PaymentRef
 	}
 	want := ev.Status
-	if want == payments.StatusPaid && ev.Amount != 0 && (ev.Amount != o.Amount || (ev.Currency != "" && ev.Currency != o.Currency)) {
+	// Never paid without a provider-reported amount and currency that match;
+	// unknown counts as a mismatch (the order stays pending for reconcile).
+	if want == payments.StatusPaid && (ev.Amount != o.Amount || ev.Currency != o.Currency) {
 		slog.Error("payments: paid amount doesn't match the order", "order_id", o.ID, "provider", o.Provider,
 			"want_amount", o.Amount, "want_currency", o.Currency, "got_amount", ev.Amount, "got_currency", ev.Currency)
 		want = ""
@@ -1019,9 +1057,15 @@ func (s *Server) applyEventTx(ctx context.Context, tx pgx.Tx, orderID string, ev
 		if _, err := tx.Exec(ctx, `UPDATE orders SET contact_id = $2 WHERE id = $1`, o.ID, cid); err != nil {
 			return o, err
 		}
-		// The receipt goes out only if this transaction commits.
-		if err := s.enqueueReceipt(ctx, tx, o); err != nil {
-			return o, err
+		// The receipt goes out only if this transaction commits. Capped per
+		// page and per recipient: a seller faking their own webhooks must not
+		// turn Tautan into a mailer.
+		if s.receiptPageLimiter.Allow(o.ProfileID) && s.receiptToLimiter.Allow(o.ProfileID+"|"+o.BuyerEmail) {
+			if err := s.enqueueReceipt(ctx, tx, o); err != nil {
+				return o, err
+			}
+		} else {
+			slog.Warn("payments: receipt not sent (rate limit)", "profile_id", o.ProfileID, "order_id", o.ID)
 		}
 	}
 	return o, nil

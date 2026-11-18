@@ -41,3 +41,10 @@ CREATE TABLE payment_events (
     UNIQUE (profile_id, provider, event_key)
 );
 CREATE INDEX payment_events_order_idx ON payment_events (order_id, received_at);
+
+-- Private uploads: paid deliverables, never served at /uploads (see private_uploads.go).
+CREATE TABLE private_uploads (
+    name       text        PRIMARY KEY,
+    profile_id uuid        NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);

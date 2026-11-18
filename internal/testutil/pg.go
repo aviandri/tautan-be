@@ -62,7 +62,7 @@ func connect(url string, stop func()) (*pgxpool.Pool, string, func(), error) {
 func Truncate(t testing.TB, pool *pgxpool.Pool) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
-		`TRUNCATE users, refresh_tokens, profiles, tabs, blocks, events, contact_submissions, contacts, form_submissions, username_redirects, images, remote_cache, poll_votes, questions, giveaway_entries, giveaway_winners, user_identities, payment_providers, orders, payment_events, email_outbox, password_resets, email_verifications RESTART IDENTITY CASCADE`)
+		`TRUNCATE users, refresh_tokens, profiles, tabs, blocks, events, contact_submissions, contacts, form_submissions, username_redirects, images, remote_cache, poll_votes, questions, giveaway_entries, giveaway_winners, user_identities, payment_providers, orders, payment_events, private_uploads, email_outbox, password_resets, email_verifications RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

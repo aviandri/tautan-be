@@ -132,6 +132,9 @@ func (s *Server) handleCreateBlock(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		var err error
+		if data, err = s.privatizeDeliverables(ctx, tx, pid, in.Type, data); err != nil {
+			return dataErrOr(err)
+		}
 		b, err = scanBlock(tx.QueryRow(ctx,
 			`INSERT INTO blocks AS b (profile_id, tab_id, parent_id, type, data, gate, position)
 			 VALUES ($1, $2, $3, $4, $5, $6, `+nextPositionSQL+`) RETURNING `+blockCols,
@@ -168,6 +171,9 @@ func (s *Server) handlePatchBlock(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := checkBlockRefs(ctx, tx, pid, cur.Type, next.Data); err != nil {
 				return err
+			}
+			if next.Data, err = s.privatizeDeliverables(ctx, tx, pid, cur.Type, next.Data); err != nil {
+				return dataErrOr(err)
 			}
 		}
 		if raw, ok := in["gate"]; ok {
