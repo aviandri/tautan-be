@@ -639,9 +639,16 @@ func TestOrderLocalDownload(t *testing.T) {
 	if r.Body.String() != string(pdf) || !strings.Contains(r.Header().Get("Content-Disposition"), `filename="Guide.pdf"`) {
 		t.Fatalf("download = %q %q", r.Header().Get("Content-Disposition"), r.Body.String())
 	}
-	// The limit is per order.
+	// A link counts once: reusing it is free, even at the limit.
 	_, _ = testPool.Exec(context.Background(), `UPDATE orders SET downloads = $2 WHERE id = $1`, o.OrderID, maxOrderDownloads)
-	if c := do(t, h, "GET", strings.TrimPrefix(got.Downloads[0].URL, "https://api.tautan.test"), nil).expect(429).errCode(); c != "download_limit" {
+	do(t, h, "GET", strings.TrimPrefix(got.Downloads[0].URL, "https://api.tautan.test"), nil, withHeader("Range", "bytes=1-")).expect(206)
+	// A new link at the limit is refused.
+	fx.s.now = func() time.Time { return time.Now().Add(2 * time.Second) }
+	fresh := fx.order(t, o).Downloads[0].URL
+	if fresh == got.Downloads[0].URL {
+		t.Fatal("expected a fresh link")
+	}
+	if c := do(t, h, "GET", strings.TrimPrefix(fresh, "https://api.tautan.test"), nil).expect(429).errCode(); c != "download_limit" {
 		t.Fatalf("limit: %s", c)
 	}
 	// Expired links.
@@ -818,4 +825,47 @@ func TestReceiptCaps(t *testing.T) {
 	if sent := mailer.take(); len(sent) != 1 {
 		t.Fatalf("receipts sent = %d, want 1 (capped per recipient)", len(sent))
 	}
+}
+
+func TestOrderSurvivesUnpublishAndRename(t *testing.T) {
+	fx := newShop(t)
+	h := fx.h
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	var o createOrderResp
+	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "u@example.com"}).expect(201).json(&o)
+	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
+	stripeHook(t, h, fx.pid, "whsec_s", map[string]any{"id": "evt_u", "type": "checkout.session.completed", "data": map[string]any{"object": map[string]any{
+		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 8500000, "currency": "idr"}}}).expect(200)
+
+	// The seller unpublishes: the page is gone, the buyer's order isn't.
+	do(t, h, "PATCH", "/api/v1/profile", map[string]any{"is_published": false}, bearer(fx.tok)).expect(200)
+	do(t, h, "GET", "/api/v1/public/seller", nil).expect(404)
+	got := fx.order(t, o)
+	if got.Order.Status != "paid" || len(got.Downloads) != 1 {
+		t.Fatalf("order after unpublish = %+v", got)
+	}
+	do(t, h, "GET", strings.TrimPrefix(got.Downloads[0].URL, "https://api.tautan.test"), nil).expect(302)
+	code := strings.ReplaceAll(o.Code, "-", "")
+	do(t, h, "POST", "/api/v1/public/seller/orders/lookup", map[string]any{"email": "u@example.com", "code": code}).expect(200)
+	// New orders still need a published page.
+	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "u@example.com"}).expect(404)
+
+	// The seller renames: links with the old username keep working.
+	do(t, h, "PATCH", "/api/v1/profile", map[string]any{"username": "seller2", "is_published": true}, bearer(fx.tok)).expect(200)
+	if fx.order(t, o).Order.Status != "paid" {
+		t.Fatal("old-username order link broke after rename")
+	}
+	// Another page's username can't open it.
+	signup(t, h, "stranger")
+	do(t, h, "GET", "/api/v1/public/stranger/orders/"+o.OrderID+"?t="+o.Token, nil).expect(404)
+}
+
+func TestWebhookRateLimit(t *testing.T) {
+	fx := newShop(t)
+	fx.s.webhookLimiter = newRateLimiter(2, time.Minute)
+	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
+	for i := 0; i < 2; i++ {
+		do(t, fx.h, "POST", "/webhooks/stripe/"+fx.pid, `{}`).expect(401)
+	}
+	do(t, fx.h, "POST", "/webhooks/stripe/"+fx.pid, `{}`).expect(429)
 }

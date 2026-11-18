@@ -603,7 +603,7 @@ func (s *Server) buyerOrder(w http.ResponseWriter, r *http.Request) (orderRow, s
 		writeError(w, http.StatusNotFound, "not_found", "order not found")
 		return orderRow{}, "", false
 	}
-	pid, err := s.publishedProfileID(ctx, username)
+	pid, err := s.buyerProfileID(ctx, username)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "order not found")
 		return orderRow{}, "", false
@@ -703,6 +703,18 @@ func (s *Server) reconcile(ctx context.Context, o orderRow) (orderRow, error) {
 	return s.applyEvent(ctx, o.ID, ev, "")
 }
 
+// buyerProfileID resolves the page an order belongs to for buyer requests.
+// Unlike page reads it ignores is_published and follows renames: buyers keep
+// access to what they paid for even if the seller unpublishes or renames.
+func (s *Server) buyerProfileID(ctx context.Context, username string) (string, error) {
+	var pid string
+	err := s.db.QueryRow(ctx, `SELECT id FROM profiles WHERE username = $1`, strings.ToLower(username)).Scan(&pid)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.db.QueryRow(ctx, `SELECT profile_id FROM username_redirects WHERE old_username = $1`, strings.ToLower(username)).Scan(&pid)
+	}
+	return pid, err
+}
+
 // ---------- POST /public/{username}/orders/lookup ----------
 
 func (s *Server) handleOrderLookup(w http.ResponseWriter, r *http.Request) {
@@ -724,7 +736,7 @@ func (s *Server) handleOrderLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	pid, err := s.publishedProfileID(ctx, chi.URLParam(r, "username"))
+	pid, err := s.buyerProfileID(ctx, chi.URLParam(r, "username"))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "no order matches that email and code")
 		return
@@ -772,7 +784,7 @@ func (s *Server) handleOrderDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	pid, err := s.publishedProfileID(ctx, chi.URLParam(r, "username"))
+	pid, err := s.buyerProfileID(ctx, chi.URLParam(r, "username"))
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "not_found", "file not found")
 		return
@@ -781,32 +793,47 @@ func (s *Server) handleOrderDownload(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	// A fresh GET counts as a download; HEAD and resumed or partial Range
-	// requests (download managers, video seeking) don't. Counting and the
-	// paid/limit check happen in one statement.
-	inc := 0
-	if r.Method == http.MethodGet && countsAsDownload(r.Header.Get("Range")) {
-		inc = 1
-	}
+	// A download counts once per signed link (exp + index): every request a
+	// link serves (Range, resumes, seeking) is free; a new link needs room
+	// under the per-order limit. Checked and counted under the order's lock.
 	var items []orderItem
-	err = s.db.QueryRow(ctx, `UPDATE orders SET downloads = downloads + $4
-		WHERE id = $1 AND profile_id = $2 AND status = 'paid' AND downloads < $3 RETURNING items`,
-		parts[1], pid, maxOrderDownloads, inc).Scan(&items)
-	if errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err) {
+	errNotPaid, errLimit := errors.New("not paid"), errors.New("limit")
+	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var status string
 		var n int
-		if e := s.db.QueryRow(ctx, `SELECT status, downloads FROM orders WHERE id = $1 AND profile_id = $2`, parts[1], pid).Scan(&status, &n); e == nil {
-			if status == "paid" && n >= maxOrderDownloads {
-				writeError(w, http.StatusTooManyRequests, "download_limit", "this order has reached its download limit; contact the seller")
-				return
-			}
-			writeError(w, http.StatusForbidden, "not_paid", "this order isn't paid")
-			return
+		if err := tx.QueryRow(ctx, `SELECT status, downloads, items FROM orders WHERE id = $1 AND profile_id = $2 FOR UPDATE`,
+			parts[1], pid).Scan(&status, &n, &items); err != nil {
+			return err
 		}
+		if status != "paid" {
+			return errNotPaid
+		}
+		linkKey := parts[0] + "." + parts[2]
+		var seen bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM order_download_links WHERE order_id = $1 AND link_key = $2)`,
+			parts[1], linkKey).Scan(&seen); err != nil || seen {
+			return err
+		}
+		if n >= maxOrderDownloads {
+			return errLimit
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO order_download_links (order_id, link_key) VALUES ($1, $2)`, parts[1], linkKey); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `UPDATE orders SET downloads = downloads + 1 WHERE id = $1`, parts[1])
+		return err
+	})
+	switch {
+	case errors.Is(err, errNotPaid):
+		writeError(w, http.StatusForbidden, "not_paid", "this order isn't paid")
+		return
+	case errors.Is(err, errLimit):
+		writeError(w, http.StatusTooManyRequests, "download_limit", "this order has reached its download limit; contact the seller")
+		return
+	case errors.Is(err, pgx.ErrNoRows) || isInvalidUUID(err):
 		writeError(w, http.StatusNotFound, "not_found", "file not found")
 		return
-	}
-	if err != nil {
+	case err != nil:
 		s.internalError(w, err)
 		return
 	}
@@ -815,12 +842,6 @@ func (s *Server) handleOrderDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveDownload(w, r, *items[index].Download)
-}
-
-// countsAsDownload: no Range, or a Range starting at byte 0.
-func countsAsDownload(rng string) bool {
-	rng = strings.TrimSpace(rng)
-	return rng == "" || strings.HasPrefix(rng, "bytes=0-")
 }
 
 var unsafeFileName = regexp.MustCompile(`[^\w.\- ()]+`)
@@ -856,6 +877,11 @@ func (s *Server) handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 	pid := chi.URLParam(r, "profile_id")
 	if !payments.Valid(name) {
 		writeError(w, http.StatusNotFound, "not_found", "unknown provider")
+		return
+	}
+	// Junk posts shouldn't cost a credential decrypt each: cap per page.
+	if !s.webhookLimiter.Allow(pid) {
+		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many webhook requests")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, webhookBodyLimit))
@@ -954,8 +980,8 @@ func (s *Server) handlePaymentWebhook(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) findOrder(ctx context.Context, tx pgx.Tx, pid, provider string, ev payments.Event) (string, error) {
 	var id string
-	if ev.OrderID != "" {
-		err := tx.QueryRow(ctx, `SELECT id FROM orders WHERE id::text = $1 AND profile_id = $2 AND provider = $3`, ev.OrderID, pid, provider).Scan(&id)
+	if uuidRE.MatchString(ev.OrderID) {
+		err := tx.QueryRow(ctx, `SELECT id FROM orders WHERE id = $1 AND profile_id = $2 AND provider = $3`, ev.OrderID, pid, provider).Scan(&id)
 		if err == nil || !errors.Is(err, pgx.ErrNoRows) {
 			return id, err
 		}
