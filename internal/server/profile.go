@@ -198,6 +198,20 @@ func (s *Server) handlePatchProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if publishing {
+		// Unverified accounts can't take an unpublished page live. Pages that
+		// are already published stay published (grandfathered).
+		var wasPublished, verified bool
+		if err := s.db.QueryRow(r.Context(), `SELECT p.is_published, u.email_verified_at IS NOT NULL
+			FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, profileID(r)).Scan(&wasPublished, &verified); err != nil {
+			s.internalError(w, err)
+			return
+		}
+		if !wasPublished && !verified {
+			writeError(w, http.StatusForbidden, "email_unverified", "confirm your email address before publishing your page")
+			return
+		}
+	}
 	if len(onboardingPatch) > 0 {
 		enc, _ := json.Marshal(onboardingPatch)
 		args = append(args, enc)

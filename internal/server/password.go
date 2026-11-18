@@ -104,6 +104,9 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.Exec(ctx, `UPDATE password_resets SET used_at = $2 WHERE user_id = $1 AND used_at IS NULL`, uid, now); err != nil {
 			return err
 		}
+		if err := markVerified(ctx, tx, uid, now); err != nil { // the link proved the address
+			return err
+		}
 		_, err := tx.Exec(ctx, `UPDATE refresh_tokens SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`, uid, now)
 		return err
 	})

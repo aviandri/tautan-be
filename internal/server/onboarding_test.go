@@ -55,6 +55,10 @@ func TestSignupWithoutUsernameAndClaim(t *testing.T) {
 	for _, bad := range []string{`{"onboarding":{"intent":"fame"}}`, `{"onboarding":{"step":"Bad Step"}}`, `{"onboarding":"done"}`} {
 		do(t, h, "PATCH", "/api/v1/profile", bad, tok).expect(400)
 	}
+	// Publishing needs a confirmed email (verify_test.go covers the gate).
+	if _, err := testPool.Exec(t.Context(), `UPDATE users SET email_verified_at = now()`); err != nil {
+		t.Fatal(err)
+	}
 	// Claim + publish + complete in one request.
 	do(t, h, "PATCH", "/api/v1/profile", map[string]any{"username": "jane", "is_published": true, "onboarding": map[string]any{"completed": true}}, tok).
 		expect(200).json(&p)

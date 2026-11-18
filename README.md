@@ -88,8 +88,8 @@ Notes:
   wherever login works: FE and API same-site with the default `lax`, or `COOKIE_SAMESITE=none`
   over HTTPS for different domains.
 - A Google account whose **verified** email matches an existing account is linked to it.
-  Signup doesn't verify emails, so on that first link the account's password is cleared and
-  all its sessions are revoked (pre-hijack protection). The owner can add a new password
+  If that account's email was never confirmed, the first link clears its password and
+  revokes all its sessions (pre-hijack protection). The owner can add a new password
   under Settings → Account (`PATCH /me/password`).
   Otherwise a new account is created and goes through onboarding with a temporary
   username, like a signup without a username. Unverified emails are rejected (403 `email_not_verified`).
@@ -108,6 +108,8 @@ then `failed`. Bodies are cleared once a message is sent or fails, because they 
   Postmark work the same way with their SMTP credentials.
 - DNS: send from a subdomain (e.g. `mail.tautan.id`) and add the provider's SPF and DKIM
   records plus a DMARC record in Cloudflare.
+- Email verification: signup sends a confirmation link (`/verify-email?token=`, 72 h).
+  Unverified accounts can't publish an unpublished page (403 `email_unverified`).
 - New features send mail with `s.enqueueEmail(ctx, tx, kind, mail.Message{...})`. Put
   templates in `internal/mail/templates.go`.
 

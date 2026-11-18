@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -83,6 +84,10 @@ func signup(t *testing.T, h http.Handler, username string) authResponse {
 	do(t, h, "POST", "/api/v1/auth/signup", map[string]string{
 		"email": username + "@example.com", "password": "password123", "username": username,
 	}).expect(201).json(&a)
+	// Most tests publish pages; verification has its own tests (verify_test.go).
+	if _, err := testPool.Exec(context.Background(), `UPDATE users SET email_verified_at = now() WHERE id = $1`, a.User.ID); err != nil {
+		t.Fatal(err)
+	}
 	return a
 }
 func urlq(s string) string { return url.QueryEscape(s) }
