@@ -1,0 +1,10 @@
+.git
+.github
+.devdata
+uploads
+bin
+*.test
+.env
+.env.*
+docs
+deploy
