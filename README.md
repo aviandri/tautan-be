@@ -49,6 +49,8 @@ and the older `/healthz` and `/api/v1/health` (DB ping).
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | (empty) | Google sign-in; the feature is off unless these and `GOOGLE_REDIRECT_URL` are set. The secret is a secret. |
 | `GOOGLE_REDIRECT_URL` | (empty) | the FE callback page, e.g. `http://localhost:3000/auth/google/callback` |
 | `GOOGLE_ISSUER` | `https://accounts.google.com` | OIDC issuer for discovery (only tests change it) |
+| `PAYMENTS_ENCRYPTION_KEY` | (empty; `make dev` uses a built-in dev key) | 32-byte key, base64 or hex (`openssl rand -base64 32`), that encrypts creators' payment provider keys at rest (AES-256-GCM). Required when `APP_ENV=production`; elsewhere payments are off while it is empty; a malformed key stops the API from starting. A secret: losing it means every creator re-enters their keys. |
+| `PAYMENTS_ENCRYPTION_KEYS_OLD` | (empty) | comma-separated retired keys, still accepted for reading during a rotation. Rows are re-sealed with the current key on their next save. |
 
 ## Google sign-in setup
 

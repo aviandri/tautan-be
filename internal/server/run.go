@@ -11,6 +11,7 @@ import (
 
 	"github.com/aviandri/tautan-be/internal/config"
 	"github.com/aviandri/tautan-be/internal/db"
+	"github.com/aviandri/tautan-be/internal/payments"
 )
 
 // Run serves HTTP until SIGINT/SIGTERM, migrating first when MIGRATE_ON_START
@@ -26,6 +27,9 @@ func Run(cfg config.Config) error {
 		return err
 	}
 	if _, err := config.ParseTrustedProxies(cfg.TrustedProxies); err != nil {
+		return err
+	}
+	if _, err := payments.NewSealer(cfg.PaymentsEncryptionKey, cfg.PaymentsEncryptionKeysOld); err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

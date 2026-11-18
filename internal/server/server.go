@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aviandri/tautan-be/internal/config"
+	"github.com/aviandri/tautan-be/internal/payments"
 	"github.com/aviandri/tautan-be/internal/storage"
 )
 
@@ -26,6 +28,11 @@ type Server struct {
 	engageLimiter  *rateLimiter
 	askLimiter     *rateLimiter
 	unlockLimiter  *rateLimiter
+	// Payments: nil sealer = PAYMENTS_ENCRYPTION_KEY unset, payments off.
+	sealer              *payments.Sealer
+	providerTestLimiter *rateLimiter
+	// PaymentOptions configures provider adapters (tests point them at fakes).
+	PaymentOptions payments.Options
 	fetcher        *safeFetcher
 	images         imageWorker
 	reval          *revalidator
@@ -58,7 +65,15 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
 		proxy:          newProxyResolver(cfg),
+
+		providerTestLimiter: newRateLimiter(20, 10*time.Minute),
 	}
+	sealer, err := payments.NewSealer(cfg.PaymentsEncryptionKey, cfg.PaymentsEncryptionKeysOld)
+	if err != nil {
+		// Run refuses to start with a bad key; tests and tools just run without payments.
+		log.Printf("payments disabled: %v", err)
+	}
+	s.sealer = sealer
 	if cfg.GoogleEnabled() {
 		s.google = newOIDCClient(cfg.GoogleIssuer, cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL,
 			func() time.Time { return s.now() })
@@ -160,6 +175,16 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/questions", s.handleListQuestions)
 				r.With(s.revalidatesPage).Patch("/questions/{id}", s.handlePatchQuestion)
 				r.With(s.revalidatesPage).Delete("/questions/{id}", s.handleDeleteQuestion)
+				r.Route("/payments/providers", func(r chi.Router) {
+					r.Get("/", s.handleListProviders)
+					r.Group(func(r chi.Router) {
+						r.Use(s.requirePayments)
+						r.Put("/{provider}", s.handlePutProvider)
+						r.Post("/{provider}/test", s.handleTestProvider)
+						r.Delete("/{provider}", s.handleDeleteProvider)
+					})
+				})
+
 				r.Get("/giveaways/{id}", s.handleGiveaway)
 				r.With(s.revalidatesPage).Post("/giveaways/{id}/draw", s.handleGiveawayDraw)
 			})
