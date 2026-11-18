@@ -13,19 +13,19 @@
 | # | Sev | Area | Finding | Status |
 |---|-----|------|---------|--------|
 | H1 | High | Auth | No rate limit on sign-in (or sign-up) | Fixed in be#52 |
-| M1 | Medium | Rate limits | Limiter map can grow without bound; past 10k keys, every hit scans it under one lock | Open |
-| M2 | Medium | Auth / CSRF | JSON endpoints accept `text/plain`, so a cross-site form can log a victim into the attacker's account (login CSRF) | Open |
-| M3 | Medium | Auth | Refresh rotation has no reuse detection | Open |
+| M1 | Medium | Rate limits | Limiter map can grow without bound; past 10k keys, every hit scans it under one lock | Fixed in be#55 |
+| M2 | Medium | Auth / CSRF | JSON endpoints accept `text/plain`, so a cross-site form can log a victim into the attacker's account (login CSRF) | Fixed in be#56 |
+| M3 | Medium | Auth | Refresh rotation has no reuse detection | Fixed in be#57 |
 | L1 | Low | Uploads | Lead-magnet download serves any stored file, including another seller's private `p_` deliverable | Fixed in be#54 |
 | L2 | Low | Headers | No `frame-ancestors` / `X-Frame-Options` on the dashboard | Fixed in fe#90 |
-| L3 | Low | Headers | No CSP anywhere; no Permissions-Policy; Caddy-only headers are missing on Vercel | Partly fixed (fe#90); CSP open |
-| L4 | Low | SSRF | `publicIP` passes `::/96` (IPv4-compatible), `::ffff:0:0:0/96`, `fec0::/10` and `192.88.99.0/24` | Open |
-| L5 | Low | Uploads | Served uploads have no `CSP: sandbox` or CORP | Open |
-| L6 | Low | Uploads | No cap on declared image dimensions | Open |
-| L7 | Low | IDOR (defence in depth) | Some child/secondary UPDATEs carry no `profile_id` scope | Open |
-| L8 | Low | Integrity | Stored ids (announcement `form_block_id`, link `dest_kind=tab` `tab_id`) aren't checked for ownership | Open |
-| L9 | Low | Auth | `/auth/refresh`, `/auth/username-available` and the Google endpoints have no rate limit | Open |
-| I1–I8 | Info | various | See the end | — |
+| L3 | Low | Headers | No CSP anywhere; no Permissions-Policy; Caddy-only headers are missing on Vercel | fe#90 (headers); CSP in Report-Only in fe#94, enforce after the Mac run |
+| L4 | Low | SSRF | `publicIP` passes `::/96` (IPv4-compatible), `::ffff:0:0:0/96`, `fec0::/10` and `192.88.99.0/24` | Fixed in be#58 |
+| L5 | Low | Uploads | Served uploads have no `CSP: sandbox` or CORP | Fixed in be#58 (CSP sandbox; CORP skipped on purpose) |
+| L6 | Low | Uploads | No cap on declared image dimensions | Fixed in be#58 |
+| L7 | Low | IDOR (defence in depth) | Some child/secondary UPDATEs carry no `profile_id` scope | Accepted for launch |
+| L8 | Low | Integrity | Stored ids (announcement `form_block_id`, link `dest_kind=tab` `tab_id`) aren't checked for ownership | Accepted for launch |
+| L9 | Low | Auth | `/auth/refresh`, `/auth/username-available` and the Google endpoints have no rate limit | Fixed in be#58 |
+| I1–I8 | Info | various | See the end | I6, I8 fixed in fe#95; the rest accepted |
 
 **No Critical findings.** No exploitable XSS, SSRF, path traversal or cross-tenant read or write was found.
 
@@ -149,6 +149,33 @@
 - **I6:** `FormResponses.tsx:107` builds `mailto:${text}` unencoded, which allows parameter injection (pre-filled cc/body) but no script. Use `encodeURIComponent`, as `Inbox.tsx:113` does.
 - **I7:** `profiles` has no `UNIQUE (user_id)`. `withProfile` and `profileForUser` pick the oldest profile (`profile.go:22`, `auth.go:321`). Safe while signup is the only creator.
 - **I8:** `/api/revalidate` (FE) reads an unbounded body before verifying the HMAC (`src/app/api/revalidate/route.ts:22`). Cap it at 4 KB.
+
+## Accepted for launch
+
+These stay open on purpose. Each was re-checked on 2026-11-19 and is either not exploitable today or costs more to change than it protects. Revisit them when the code around them changes.
+
+- **L7:** secondary UPDATEs without a `profile_id` scope (`blocks.go:235, 266, 320, 338`, `engage.go:630`, `cart.go:245, 255`). Each runs after a pid-scoped check of the same id inside the same transaction. Add the scope when those queries are next touched.
+- **L8:** the stored announcement `form_block_id` and the link `tab_id` aren't owner-checked. Both are only resolved within the owner's own page, and form posts are scoped to `{username}`, so a foreign id does nothing.
+- **I1:** downloads 302 to the seller's own external URL. This is by design, and limited to http(s) URLs that passed `checkWebURL`.
+- **I2:** images uploaded with `kind=file` over 5 MB get no variants. This is a quality issue (served at original size), not a security one.
+- **I3:** a once-free upload that later becomes paid stays reachable at its old public URL. Documented: sellers who need it private should upload the file again as a paid file.
+- **I4:** embed iframes have no `sandbox`. Their sources are allow-listed hosts, and `frame-src` (fe#94) restricts them again.
+- **I5:** two image `src` values skip `safeImageSrc` on the FE. The BE restricts both fields to http(s) or `/uploads/`, and `img src` can't run script.
+- **I7:** there's no `UNIQUE (profiles.user_id)`. Signup is the only place profiles are created; add the constraint before any multi-profile feature.
+
+## Fix log
+
+| PR | Fixes |
+|----|-------|
+| be#52 | H1: sign-in and sign-up rate limits |
+| be#54 | L1: lead-magnet download serves only public files |
+| fe#90 | L2 and part of L3: anti-framing on app and checkout routes; nosniff and Permissions-Policy |
+| be#55 | M1: bounded limiter memory; per-IP ceilings checked first |
+| be#56 | M2: `requireJSON` on sign-in and token endpoints |
+| be#57 | M3: refresh-token families with reuse detection (migration 000024) |
+| fe#94 | L3: CSP in Report-Only plus `/api/csp-report`. Journey (CSP_STRICT) and a GA4/Pixel/embeds check showed 0 violations. Enforce after the Mac run. |
+| be#58 | L4, L5, L6, L9 |
+| fe#95 | I6, I8 |
 
 ---
 
