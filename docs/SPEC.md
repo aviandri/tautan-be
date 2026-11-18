@@ -909,6 +909,17 @@ Gaps are skipped, and a non-numeric quantity is `invalid_quantity`. Shipping use
 **Not in (c):** stock counts (the `sold_out` badge stays), shipping on single `product` cards, and per-region or
 weight-based shipping rates.
 
+#### Dev-only `fake` payment provider (for e2e without provider keys; migration 000023)
+- Offered only when `APP_ENV` isn't `production`. In production it isn't listed, `PUT /payments/providers/fake`,
+  its webhook and `/dev/fake-checkout/*` all answer 404, and the server refuses to build the adapter.
+- Sandbox only. `secret_key` is any string starting with `fake_`, with no webhook secret. It accepts IDR and USD.
+- The checkout URL is `{PUBLIC_BASE_URL}/dev/fake-checkout/{ref}` (ref `fk_…`). That page is served by the API, shows the
+  items and total, and has four buttons: Pay, Fail, Expire, and Pay half (amount mismatch). Each one records the outcome in
+  memory and delivers `{ref, order_id}` to `POST /webhooks/fake/{profile_id}`. That handler confirms the outcome with
+  GetStatus, like Xendit and Midtrans, so the amount and currency checks apply. The buyer is then redirected to the
+  order page (`&cancelled=1` after Fail or Expire).
+- Fake checkouts live in memory, so after an API restart, older fake orders stay pending.
+
 ## Performance budget for the public page `/[username]` (user requirement, 2026-11-16)
 
 The page visitors open from a bio link has to feel instant on a mid-range Android on 4G. Every PR that touches the public page states its numbers.
