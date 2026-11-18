@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,6 +64,15 @@ type Config struct {
 	// in PaymentsEncryptionKeysOld (comma-separated) until every row is re-saved.
 	PaymentsEncryptionKey     string
 	PaymentsEncryptionKeysOld []string
+
+	// Transactional email. MAIL_DRIVER=log (default) writes messages to the
+	// log instead of sending (bodies only outside production).
+	MailDriver   string
+	MailFrom     string
+	SMTPHost     string
+	SMTPPort     int
+	SMTPUsername string
+	SMTPPassword string
 }
 
 // GoogleEnabled reports whether Google sign-in is configured.
@@ -120,6 +130,12 @@ func Load() Config {
 	c.S3SecretAccessKey = env("S3_SECRET_ACCESS_KEY", "")
 	c.S3Prefix = env("S3_PREFIX", "uploads/")
 	c.S3PathStyle = env("S3_PATH_STYLE", "false") == "true"
+	c.MailDriver = strings.ToLower(env("MAIL_DRIVER", "log"))
+	c.MailFrom = env("MAIL_FROM", "Tautan <no-reply@localhost>")
+	c.SMTPHost = env("SMTP_HOST", "")
+	c.SMTPPort, _ = strconv.Atoi(env("SMTP_PORT", "587"))
+	c.SMTPUsername = env("SMTP_USERNAME", "")
+	c.SMTPPassword = env("SMTP_PASSWORD", "")
 	return c
 }
 
