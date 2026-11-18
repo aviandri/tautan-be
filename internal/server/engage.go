@@ -273,6 +273,12 @@ func (s *Server) handlePollVote(w http.ResponseWriter, r *http.Request) {
 		out["results"] = res
 	}
 	if tag.RowsAffected() == 0 {
+		// report the option this visitor actually voted for today, not the one just attempted
+		var prev string
+		if err := s.db.QueryRow(ctx, `SELECT option_id FROM poll_votes WHERE block_id = $1 AND visitor_hash = $2
+			AND day = ($3::timestamptz AT TIME ZONE 'UTC')::date`, b.ID, vh, now).Scan(&prev); err == nil {
+			out["voted"] = prev
+		}
 		out["error"] = apiError{Code: "already_voted", Message: "you already voted today"}
 		writeJSON(w, http.StatusConflict, out)
 		return

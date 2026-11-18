@@ -251,8 +251,14 @@ func TestPollVisitorID(t *testing.T) {
 	}
 	vote("red", "visitorAAAAAAAAAAAAAAAA").expect(200)
 	vote("blue", "visitorBBBBBBBBBBBBBBBB").expect(200) // same IP + UA, different person
-	if c := vote("blue", "visitorAAAAAAAAAAAAAAAA"); c.Code != 409 || c.errCode() != "already_voted" {
+	c := vote("blue", "visitorAAAAAAAAAAAAAAAA")
+	if c.Code != 409 || c.errCode() != "already_voted" {
 		t.Fatalf("repeat vote by the same visitor id: %d %s", c.Code, c.Body)
+	}
+	var again struct{ Voted string }
+	c.json(&again)
+	if again.Voted != "red" {
+		t.Fatalf("409 must report the stored vote (red), got %q", again.Voted)
 	}
 	// No (or a malformed) id: the old IP+UA key, so a second id-less vote is refused.
 	vote("red", "").expect(200)
