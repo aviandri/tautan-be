@@ -27,6 +27,7 @@ type Server struct {
 	images         imageWorker
 	reval          *revalidator
 	remote         remoteWorker
+	google         *oidcClient // nil when Google sign-in is not configured
 	// InlineRemote resolves oEmbed/RSS content during the save request (tests, seeding).
 	InlineRemote bool
 	// InlineImages encodes image variants during the upload request (tests, seeding).
@@ -39,7 +40,7 @@ type Server struct {
 }
 
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
-	return &Server{
+	s := &Server{
 		cfg: cfg, db: pool, now: time.Now,
 		eventLimiter:   newRateLimiter(120, time.Minute),
 		contactLimiter: newRateLimiter(5, 10*time.Minute),
@@ -51,6 +52,11 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
 	}
+	if cfg.GoogleEnabled() {
+		s.google = newOIDCClient(cfg.GoogleIssuer, cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL,
+			func() time.Time { return s.now() })
+	}
+	return s
 }
 
 func (s *Server) Routes() http.Handler {
@@ -81,6 +87,9 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/auth/refresh", s.handleRefresh)
 		r.Post("/auth/logout", s.handleLogout)
 		r.Get("/auth/username-available", s.handleUsernameAvailable)
+		r.Get("/auth/providers", s.handleAuthProviders)
+		r.Get("/auth/google/start", s.handleGoogleStart)
+		r.Post("/auth/google/callback", s.handleGoogleCallback)
 
 		r.Get("/public/{username}", s.handlePublicPage)
 		r.Post("/public/{username}/events", s.handlePublicEvent)

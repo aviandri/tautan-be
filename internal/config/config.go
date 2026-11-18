@@ -24,6 +24,16 @@ type Config struct {
 	// RevalidateSecret. Disabled while the secret is empty.
 	RevalidateURL    string
 	RevalidateSecret string
+	// Google sign-in (P2-8). The feature is off unless all three are set.
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURL  string // the FE callback page, e.g. http://localhost:3000/auth/google/callback
+	GoogleIssuer       string // OIDC issuer used for discovery; tests point it at a fake server
+}
+
+// GoogleEnabled reports whether Google sign-in is configured.
+func (c Config) GoogleEnabled() bool {
+	return c.GoogleClientID != "" && c.GoogleClientSecret != "" && c.GoogleRedirectURL != ""
 }
 
 func Load() Config {
@@ -43,6 +53,10 @@ func Load() Config {
 	}
 	c.RevalidateURL = env("REVALIDATE_URL", env("FRONTEND_REVALIDATE_URL", c.AppBaseURL+"/api/revalidate"))
 	c.RevalidateSecret = env("REVALIDATE_SECRET", "")
+	c.GoogleClientID = env("GOOGLE_CLIENT_ID", "")
+	c.GoogleClientSecret = env("GOOGLE_CLIENT_SECRET", "")
+	c.GoogleRedirectURL = env("GOOGLE_REDIRECT_URL", "")
+	c.GoogleIssuer = strings.TrimRight(env("GOOGLE_ISSUER", "https://accounts.google.com"), "/")
 	return c
 }
 

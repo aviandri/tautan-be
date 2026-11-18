@@ -30,6 +30,44 @@ Health check: `curl localhost:8080/api/v1/health` → `{"status":"ok"}`
 | `COUNTRY_HEADER` | `CF-IPCountry` | header holding the visitor's country code |
 | `APP_BASE_URL` | `http://localhost:3000` | public FE origin (page URL in vCards) |
 | `TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP (rate limits); enable only behind your own proxy |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | (empty) | Google sign-in; the feature is off unless these and `GOOGLE_REDIRECT_URL` are set. The secret is a secret. |
+| `GOOGLE_REDIRECT_URL` | (empty) | the FE callback page, e.g. `http://localhost:3000/auth/google/callback` |
+| `GOOGLE_ISSUER` | `https://accounts.google.com` | OIDC issuer for discovery (only tests change it) |
+
+## Google sign-in setup
+
+The API runs the OAuth 2.0 / OpenID Connect authorization code flow with PKCE, state and
+nonce. Google redirects the browser to the **FE** page `/auth/google/callback`, which POSTs
+the code to the API. That means the redirect URI registered at Google is the FE URL, not the API URL.
+
+1. Open [Google Cloud console](https://console.cloud.google.com/) and create (or pick) a project.
+2. **APIs & Services → OAuth consent screen** (Google Auth Platform → Branding/Audience):
+   - User type: **External**. Fill in the app name (Tautan), support email, app domain and
+     authorised domain (e.g. `tautan.id`).
+   - Scopes: `openid`, `.../auth/userinfo.email`, `.../auth/userinfo.profile`. These are
+     non-sensitive, so Google won't review the app.
+   - While the app is in **Testing**, only the listed test users can sign in. Click
+     **Publish app** before launch.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   - Application type: **Web application**.
+   - Authorised JavaScript origins: leave empty (the browser never calls Google's JS).
+   - Authorised redirect URIs, one per environment, matching `GOOGLE_REDIRECT_URL` exactly
+     (scheme, host, port, path, no trailing slash):
+     - `http://localhost:3000/auth/google/callback` (local; the FE's dev port)
+     - `https://tautan.id/auth/google/callback` (production)
+4. Copy the client ID and secret into `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, set
+   `GOOGLE_REDIRECT_URL`, and restart. `GET /api/v1/auth/providers` should now return
+   `{"google": true}` and the FE shows "Continue with Google".
+
+Notes:
+- The flow keeps state, nonce and the PKCE verifier in a 10-minute httpOnly cookie
+  (`tautan_oauth`, path `/api/v1/auth/google`). It follows the refresh cookie's
+  SameSite/Secure rules, so the FE and API must be same-site, or the API must run with
+  `COOKIE_SECURE=true` (HTTPS).
+- A Google account whose **verified** email matches an existing account is linked to it.
+  Otherwise a new account is created and goes through onboarding with a temporary
+  username, like a signup without a username. Unverified emails are rejected (403 `email_not_verified`).
+- Tests use a fake OIDC server (`internal/server/google_test.go`), so CI needs no real credentials.
 
 ## Layout
 
