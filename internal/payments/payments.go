@@ -190,6 +190,29 @@ func Supports(name, currency string) bool {
 	return false
 }
 
+// AmountRange is the order total (minor units) a provider's hosted checkout
+// takes in a currency, so the API can say so before redirecting. These are
+// conservative bounds for one order; a provider may still narrow them per
+// payment method (e.g. retail outlets from Rp 10.000), which its own page shows.
+//   - Xendit invoices and Midtrans Snap: from Rp 1.000 (QRIS and e-wallets go
+//     lower, but most channels start around here); up to Rp 1.000.000.000.
+//   - Stripe: the US$0.50 card minimum (Rp 10.000 covers it at current
+//     rates); up to 8 digits for USD and 12 for IDR (Stripe's amount limits).
+//   - Xendit USD: from US$1.
+func AmountRange(name, currency string) (min, max int64) {
+	switch {
+	case currency == "IDR" && name == Stripe:
+		return 10_000_00, 9_999_999_999_99
+	case currency == "IDR":
+		return 1_000_00, 1_000_000_000_00
+	case currency == "USD" && name == Stripe:
+		return 50, 99_999_999
+	case currency == "USD":
+		return 1_00, 99_999_999
+	}
+	return 1, 0
+}
+
 // NeedsWebhookSecret reports whether a provider uses a separate webhook secret.
 func NeedsWebhookSecret(name string) bool { return name != Midtrans }
 

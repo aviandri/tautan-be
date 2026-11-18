@@ -50,6 +50,7 @@ type orderItem struct {
 	UnitAmount int64         `json:"unit_amount"`
 	Quantity   int           `json:"quantity"`
 	Download   *DownloadFile `json:"download,omitempty"`
+	Delivery   string        `json:"delivery,omitempty"` // "ship" for physical shop items (payments c)
 }
 
 // orderItemView is what the API returns: the file name, never its URL.
@@ -62,6 +63,7 @@ type orderItemView struct {
 	UnitAmount int64  `json:"unit_amount"`
 	Quantity   int    `json:"quantity"`
 	FileName   string `json:"file_name,omitempty"`
+	Delivery   string `json:"delivery,omitempty"`
 }
 
 type orderRow struct {
@@ -80,16 +82,23 @@ type orderRow struct {
 	PaidAt, RefundedAt    *time.Time
 	LastCheckedAt         *time.Time
 	CreatedAt             time.Time
+	Shipping              *ShippingAddress
+	ShippingFee           int64
+	Fulfilment            *string // nil: nothing to ship; unfulfilled | shipped
+	Tracking              string
+	ShippedAt             *time.Time
 }
 
 const orderCols = `id, code, profile_id, buyer_email, buyer_name, items, amount, currency, provider, mode, status,
-	provider_ref, payment_ref, checkout_url, downloads, expires_at, paid_at, refunded_at, last_checked_at, created_at`
+	provider_ref, payment_ref, checkout_url, downloads, expires_at, paid_at, refunded_at, last_checked_at, created_at,
+	shipping, shipping_fee, fulfilment, tracking, shipped_at`
 
 func scanOrder(row pgx.Row) (orderRow, error) {
 	var o orderRow
 	err := row.Scan(&o.ID, &o.Code, &o.ProfileID, &o.BuyerEmail, &o.BuyerName, &o.Items, &o.Amount, &o.Currency,
 		&o.Provider, &o.Mode, &o.Status, &o.ProviderRef, &o.PaymentRef, &o.CheckoutURL, &o.Downloads,
-		&o.ExpiresAt, &o.PaidAt, &o.RefundedAt, &o.LastCheckedAt, &o.CreatedAt)
+		&o.ExpiresAt, &o.PaidAt, &o.RefundedAt, &o.LastCheckedAt, &o.CreatedAt,
+		&o.Shipping, &o.ShippingFee, &o.Fulfilment, &o.Tracking, &o.ShippedAt)
 	return o, err
 }
 
@@ -111,13 +120,19 @@ type Order struct {
 	ExpiresAt   time.Time       `json:"expires_at"`
 	PaidAt      *time.Time      `json:"paid_at"`
 	RefundedAt  *time.Time      `json:"refunded_at"`
+	// payments c: owner-only; the buyer's view never carries the address.
+	ShippingFee int64            `json:"shipping_fee"`
+	Shipping    *ShippingAddress `json:"shipping"`
+	Fulfilment  *string          `json:"fulfilment"`
+	Tracking    string           `json:"tracking"`
+	ShippedAt   *time.Time       `json:"shipped_at"`
 }
 
 func (o orderRow) itemViews() []orderItemView {
 	out := make([]orderItemView, 0, len(o.Items))
 	for _, it := range o.Items {
 		v := orderItemView{BlockID: it.BlockID, ItemID: it.ItemID, Kind: it.Kind, Name: it.Name, Variant: it.Variant,
-			UnitAmount: it.UnitAmount, Quantity: it.Quantity}
+			UnitAmount: it.UnitAmount, Quantity: it.Quantity, Delivery: it.Delivery}
 		if it.Download != nil {
 			v.FileName = downloadName(*it.Download)
 		}
@@ -130,7 +145,16 @@ func (o orderRow) view() Order {
 	return Order{ID: o.ID, Code: o.Code, Status: o.Status, BuyerEmail: o.BuyerEmail, BuyerName: o.BuyerName,
 		Items: o.itemViews(), Amount: o.Amount, Currency: o.Currency, Provider: o.Provider, Mode: o.Mode,
 		ProviderRef: o.ProviderRef, Downloads: o.Downloads, CreatedAt: o.CreatedAt, ExpiresAt: o.ExpiresAt,
-		PaidAt: o.PaidAt, RefundedAt: o.RefundedAt}
+		PaidAt: o.PaidAt, RefundedAt: o.RefundedAt, ShippingFee: o.ShippingFee, Shipping: o.Shipping,
+		Fulfilment: o.Fulfilment, Tracking: o.Tracking, ShippedAt: o.ShippedAt}
+}
+
+// lineName is "Tee (Size: M)".
+func lineName(it orderItem) string {
+	if it.Variant != "" {
+		return it.Name + " (" + it.Variant + ")"
+	}
+	return it.Name
 }
 
 func downloadName(d DownloadFile) string {
@@ -361,7 +385,9 @@ func purchasable(b Block, itemID string, options map[string]string) (purchase, e
 				return purchase{}, errNotForSale
 			}
 		}
-		if p.Action.Kind != "checkout" || p.Price == nil || p.Action.Download == nil || p.Badge == "sold_out" {
+		ship := p.Action.Delivery == "ship"
+		if p.Action.Kind != "checkout" || p.Price == nil || p.Badge == "sold_out" ||
+			(ship && b.Type != "shop") || (!ship && p.Action.Download == nil) {
 			return purchase{}, errNotForSale
 		}
 		variant, err := pickVariant(p.Variants, options)
@@ -370,6 +396,9 @@ func purchasable(b Block, itemID string, options map[string]string) (purchase, e
 		}
 		it := orderItem{BlockID: b.ID, Kind: "product", Name: p.Name, Variant: variant, UnitAmount: *p.Price,
 			Quantity: 1, Download: p.Action.Download}
+		if ship {
+			it.Download, it.Delivery = nil, "ship"
+		}
 		if b.Type == "shop" {
 			it.ItemID = itemID
 		}
@@ -415,6 +444,9 @@ type createOrderIn struct {
 	Email    string            `json:"email"`
 	Name     string            `json:"name"`
 	Provider string            `json:"provider"`
+	// payments c: a shop cart (instead of item_id) and, when anything ships, the address.
+	Items    []cartLineIn     `json:"items"`
+	Shipping *ShippingAddress `json:"shipping"`
 }
 
 func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -459,15 +491,52 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	if !s.gateOK(w, r, b) {
 		return
 	}
-	buy, err := purchasable(b, in.ItemID, in.Options)
-	var ve variantError
-	if errors.As(err, &ve) {
-		writeErrorDetails(w, http.StatusBadRequest, "invalid_options", ve.msg, map[string]string{"options": ve.msg})
-		return
+	var lines []orderItem
+	var currency string
+	if len(in.Items) > 0 {
+		if b.Type != "shop" || in.ItemID != "" {
+			writeError(w, http.StatusBadRequest, "invalid_items", "a cart is for shop cards; send items or item_id, not both")
+			return
+		}
+		var err error
+		if lines, currency, err = cartLines(b, in.Items); err != nil {
+			var ce cartError
+			errors.As(err, &ce)
+			writeErrorDetails(w, http.StatusBadRequest, ce.code, ce.msg, map[string]string{ce.field: ce.msg})
+			return
+		}
+	} else {
+		buy, err := purchasable(b, in.ItemID, in.Options)
+		var ve variantError
+		if errors.As(err, &ve) {
+			writeErrorDetails(w, http.StatusBadRequest, "invalid_options", ve.msg, map[string]string{"options": ve.msg})
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "not_for_sale", "this card can't be bought")
+			return
+		}
+		lines, currency = []orderItem{buy.item}, buy.currency
 	}
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "not_for_sale", "this card can't be bought")
-		return
+	ships := linesShip(lines)
+	var shipFee int64
+	var shipping *ShippingAddress
+	fulfilment := (*string)(nil)
+	if ships {
+		if in.Shipping == nil {
+			in.Shipping = &ShippingAddress{}
+		}
+		if errs := normShipping(in.Shipping); len(errs) > 0 {
+			writeErrorDetails(w, http.StatusBadRequest, "invalid_shipping", "check the shipping address", errs)
+			return
+		}
+		shipping, shipFee = in.Shipping, shopShippingFee(b)
+		unf := "unfulfilled"
+		fulfilment = &unf
+	}
+	amount := shipFee
+	for _, it := range lines {
+		amount += it.UnitAmount * int64(it.Quantity)
 	}
 	if !s.orderLimiter.Allow(clientIP(r) + "|" + pid) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many checkouts, try again in a few minutes")
@@ -480,17 +549,25 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
-	var fit []string
+	var supported []string
 	for _, n := range names {
-		if payments.Supports(n, buy.currency) {
-			fit = append(fit, n)
+		if payments.Supports(n, currency) {
+			supported = append(supported, n)
 		}
+	}
+	if len(supported) == 0 {
+		writeError(w, http.StatusConflict, "payments_unavailable", "this seller isn't taking payments in "+currency+" right now")
+		return
+	}
+	// Say so before redirecting when the total is outside what checkout takes.
+	fit := providersInRange(supported, amount, currency)
+	if len(fit) == 0 {
+		ce := rangeError(supported, amount, currency)
+		writeErrorDetails(w, http.StatusBadRequest, ce.code, ce.msg, map[string]string{ce.field: ce.msg})
+		return
 	}
 	provider := in.Provider
 	switch {
-	case len(fit) == 0:
-		writeError(w, http.StatusConflict, "payments_unavailable", "this seller isn't taking payments in "+buy.currency+" right now")
-		return
 	case provider == "" && len(fit) == 1:
 		provider = fit[0]
 	case provider == "":
@@ -505,6 +582,13 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		ok = ok || n == provider
 	}
 	if !ok {
+		for _, n := range supported {
+			if n == provider {
+				ce := rangeError([]string{n}, amount, currency)
+				writeErrorDetails(w, http.StatusBadRequest, ce.code, ce.msg, map[string]string{ce.field: ce.msg})
+				return
+			}
+		}
 		writeError(w, http.StatusBadRequest, "invalid_provider", "that payment option isn't available for this item")
 		return
 	}
@@ -519,14 +603,14 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := s.now()
-	amount := buy.item.UnitAmount * int64(buy.item.Quantity)
 	var o orderRow
 	for attempt := 0; ; attempt++ {
 		o, err = scanOrder(s.db.QueryRow(ctx, `INSERT INTO orders
-			(code, profile_id, buyer_email, buyer_name, items, amount, currency, provider, mode, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING `+orderCols,
-			newOrderCode(), pid, strings.ToLower(in.Email), in.Name, []orderItem{buy.item}, amount, buy.currency,
-			provider, row.mode, now.Add(orderTTL)))
+			(code, profile_id, buyer_email, buyer_name, items, amount, currency, provider, mode, expires_at,
+			 shipping, shipping_fee, fulfilment)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING `+orderCols,
+			newOrderCode(), pid, strings.ToLower(in.Email), in.Name, lines, amount, currency,
+			provider, row.mode, now.Add(orderTTL), shipping, shipFee, fulfilment))
 		if err == nil || attempt == 3 || !strings.Contains(err.Error(), "orders_code_key") {
 			break
 		}
@@ -536,18 +620,26 @@ func (s *Server) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	desc := buy.item.Name
-	if buy.item.Variant != "" {
-		desc += " (" + buy.item.Variant + ")"
+	// The provider sees the lines and the fee; never the shipping address.
+	var items []payments.Item
+	for _, it := range lines {
+		items = append(items, payments.Item{Name: lineName(it), UnitAmount: it.UnitAmount, Quantity: it.Quantity})
+	}
+	if shipFee > 0 {
+		items = append(items, payments.Item{Name: "Shipping", UnitAmount: shipFee, Quantity: 1})
+	}
+	desc := lineName(lines[0])
+	if len(lines) > 1 {
+		desc = fmt.Sprintf("%d items from @%s", len(lines), strings.ToLower(username))
 	}
 	cctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	sess, err := p.CreateCheckout(cctx, payments.Checkout{
 		OrderID:     o.ID,
 		Amount:      amount,
-		Currency:    buy.currency,
+		Currency:    currency,
 		Description: desc + " · order " + o.Code,
-		Items:       []payments.Item{{Name: desc, UnitAmount: buy.item.UnitAmount, Quantity: buy.item.Quantity}},
+		Items:       items,
 		BuyerEmail:  o.BuyerEmail,
 		BuyerName:   o.BuyerName,
 		SuccessURL:  s.orderPageURL(username, o.ID),
@@ -645,6 +737,8 @@ func (s *Server) writeBuyerOrder(w http.ResponseWriter, o orderRow, username str
 		"id": o.ID, "code": o.Code, "status": o.Status, "amount": o.Amount, "currency": o.Currency,
 		"items": o.itemViews(), "buyer_email": o.BuyerEmail, "buyer_name": o.BuyerName, "provider": o.Provider,
 		"mode": o.Mode, "created_at": o.CreatedAt, "paid_at": o.PaidAt, "expires_at": o.ExpiresAt, "checkout_url": nil,
+		// payments c: the fee and delivery status, never the address.
+		"shipping_fee": o.ShippingFee, "fulfilment": o.Fulfilment, "tracking": o.Tracking, "shipped_at": o.ShippedAt,
 	}
 	if o.Status == payments.StatusPending && o.CheckoutURL != nil && now.Before(o.ExpiresAt) {
 		view["checkout_url"] = *o.CheckoutURL
@@ -1098,21 +1192,17 @@ func (s *Server) applyEventTx(ctx context.Context, tx pgx.Tx, orderID string, ev
 }
 
 func (s *Server) enqueueReceipt(ctx context.Context, tx pgx.Tx, o orderRow) error {
-	var username, display string
-	if err := tx.QueryRow(ctx, `SELECT username, display_name FROM profiles WHERE id = $1`, o.ProfileID).Scan(&username, &display); err != nil {
+	username, seller, err := sellerName(ctx, tx, o.ProfileID)
+	if err != nil {
 		return err
 	}
-	seller := strings.TrimSpace(display)
-	if seller == "" {
-		seller = "@" + username
-	}
-	r := mail.Receipt{Seller: seller, Code: o.Code, Total: mail.Money(o.Amount, o.Currency), Link: s.orderPageURL(username, o.ID)}
+	r := mail.Receipt{Seller: seller, Code: o.Code, Total: mail.Money(o.Amount, o.Currency), Link: s.orderPageURL(username, o.ID),
+		Downloads: linesDownload(o.Items), Ships: o.Fulfilment != nil}
 	for _, it := range o.Items {
-		n := it.Name
-		if it.Variant != "" {
-			n += " (" + it.Variant + ")"
-		}
-		r.Lines = append(r.Lines, mail.ReceiptLine{Name: n, Quantity: it.Quantity, Amount: mail.Money(it.UnitAmount*int64(it.Quantity), o.Currency)})
+		r.Lines = append(r.Lines, mail.ReceiptLine{Name: lineName(it), Quantity: it.Quantity, Amount: mail.Money(it.UnitAmount*int64(it.Quantity), o.Currency)})
+	}
+	if o.ShippingFee > 0 {
+		r.Shipping = mail.Money(o.ShippingFee, o.Currency)
 	}
 	return s.enqueueEmail(ctx, tx, "order_receipt", mail.OrderReceipt(o.BuyerEmail, r))
 }
@@ -1134,6 +1224,16 @@ func orderFilter(r *http.Request, pid string) (string, []any, error) {
 		}
 		args = append(args, st)
 		where = append(where, fmt.Sprintf("status = $%d", len(args)))
+	}
+	// payments c: "to ship" is paid and not shipped yet.
+	switch r.URL.Query().Get("fulfilment") {
+	case "":
+	case "unfulfilled":
+		where = append(where, "status = 'paid' AND fulfilment = 'unfulfilled'")
+	case "shipped":
+		where = append(where, "fulfilment = 'shipped'")
+	default:
+		return "", nil, errors.New("fulfilment must be unfulfilled or shipped")
 	}
 	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
 		args = append(args, "%"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(q)+"%")
@@ -1189,8 +1289,14 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 	qr := r.Clone(ctx)
 	qv := qr.URL.Query()
 	qv.Del("status")
+	qv.Del("fulfilment")
 	qr.URL.RawQuery = qv.Encode()
 	cw, cargs, _ := orderFilter(qr, pid)
+	var toShip int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM orders WHERE `+cw+` AND status = 'paid' AND fulfilment = 'unfulfilled'`, cargs...).Scan(&toShip); err != nil {
+		s.internalError(w, err)
+		return
+	}
 	crows, err := s.db.Query(ctx, `SELECT status, count(*) FROM orders WHERE `+cw+` GROUP BY status`, cargs...)
 	if err != nil {
 		s.internalError(w, err)
@@ -1228,6 +1334,7 @@ func (s *Server) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		revenue[c] = n
 	}
+	counts["to_ship"] = toShip
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": next, "counts": counts, "revenue": revenue})
 }
 
@@ -1322,10 +1429,7 @@ func (s *Server) handleOrdersCSV(w http.ResponseWriter, r *http.Request) {
 	for _, o := range list {
 		var names []string
 		for _, it := range o.Items {
-			n := it.Name
-			if it.Variant != "" {
-				n += " (" + it.Variant + ")"
-			}
+			n := lineName(it)
 			if it.Quantity > 1 {
 				n = strconv.Itoa(it.Quantity) + " × " + n
 			}
@@ -1339,11 +1443,25 @@ func (s *Server) handleOrdersCSV(w http.ResponseWriter, r *http.Request) {
 		if o.ProviderRef != nil {
 			ref = *o.ProviderRef
 		}
+		fee, ful, shipped := "", "", ""
+		if o.Fulfilment != nil {
+			fee, ful = majorAmount(o.ShippingFee), *o.Fulfilment
+		}
+		if o.ShippedAt != nil {
+			shipped = ts(*o.ShippedAt)
+		}
+		a := ShippingAddress{}
+		if o.Shipping != nil {
+			a = *o.Shipping
+		}
 		out = append(out, []string{ts(o.CreatedAt), o.Code, string(o.Status), o.BuyerEmail, o.BuyerName,
-			strings.Join(names, "; "), majorAmount(o.Amount), o.Currency, o.Provider, o.Mode, paid, ref})
+			strings.Join(names, "; "), majorAmount(o.Amount), o.Currency, o.Provider, o.Mode, paid, ref,
+			fee, ful, o.Tracking, shipped, a.Name, a.Phone, a.Address, a.City, a.PostalCode, a.Country, a.Notes})
 	}
 	writeCSV(w, "orders.csv", []string{"Created at", "Order", "Status", "Buyer email", "Buyer name", "Items",
-		"Amount", "Currency", "Provider", "Mode", "Paid at", "Provider reference"}, out)
+		"Amount", "Currency", "Provider", "Mode", "Paid at", "Provider reference",
+		"Shipping fee", "Fulfilment", "Tracking", "Shipped at", "Ship to", "Phone", "Address", "City", "Postal code",
+		"Country", "Delivery notes"}, out)
 }
 
 // majorAmount formats minor units as a plain decimal ("85000.00").

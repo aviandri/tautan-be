@@ -817,6 +817,91 @@ downloads: [{index, name, file_name, url, expires_at}]   // only while status = 
 - `GET /orders.csv?status=&q=`, with columns Created at, Order, Status, Buyer email, Buyer name, Items, Amount
   (major units), Currency, Provider, Mode, Paid at and Provider reference. Cells are formula-safe.
 
+#### Payments (c): shop cart checkout: implemented (BE, tautan-be PR "Payments (c)")
+One cart per `shop` card, paid in one checkout. Physical items ship. Prices, variants and the shipping fee always come
+from the stored card; the browser only says which items, how many and which options.
+
+**Card data (additive).**
+- `product.action` (checkout) gains `delivery: "download" | "ship"`. It defaults to `download` and is stored as absent.
+  - `ship` is for shop items only. A `product` card with `ship` → `400 invalid_data` on `action.delivery`.
+  - A `ship` item has no deliverable: `action.download` is dropped on save.
+- `shop` gains `shipping_fee?`, a flat fee per order in minor units. It's added once when the cart has a `ship` item.
+  `0` is stored as absent (free shipping). It must be whole rupiah for IDR.
+- All checkout items in one shop must use one currency (`400 invalid_data` on `items[i].currency`). The shipping fee is
+  in that currency.
+- Public reads include `delivery` and `shipping_fee`, since the FE needs both.
+
+**Checkout.** `POST /public/{u}/orders` also accepts a cart:
+```
+{block_id, items: [{item_id, quantity?, options?: {"<variant name>": "<option>"}}], email, name?, provider?,
+ shipping?: {name, phone, address, city, postal_code, country?, notes?}}
+```
+- `items` is for shop cards only, and replaces `item_id`. Sending both, or sending `items` for another card type →
+  `400 invalid_items`.
+- 1–20 lines. A `ship` line takes `quantity` 1–20 (default 1). A `download` line is always 1; anything else →
+  `400 invalid_quantity`.
+- Equal lines (same item and variant) merge: `ship` quantities add up (the merged total is capped at 20); a repeated
+  download counts once.
+- **Shipping address**, required when anything ships, on the cart or the single `item_id` path → otherwise
+  `400 invalid_shipping` with `details` per field (`shipping.name`, `shipping.phone`, …):
+  - `name` (≤100), `address` (≤300), `city` (≤80), `notes` (≤300, optional).
+  - `phone`: loose. Spaces, dashes, dots and brackets are dropped, then `^\+?[0-9]{7,15}$` (08…, 62…, +62…, or
+    international numbers).
+  - `country`: ISO 3166-1 alpha-2, default `ID`. `postal_code` is required with 5 digits for `ID`, and optional
+    elsewhere (letters, digits, spaces and dashes, max 12 characters).
+  - The address is buyer personal data. Only the page owner sees it (order detail, CSV). It's never logged, never in
+    redirects, and never sent to the payment provider.
+- The total is the lines plus the shipping fee. The provider gets each line plus a "Shipping" line, and the description
+  "N items from @u · order CODE".
+- **Amount limits, checked before redirecting.** Providers that can't take the total are left out of the automatic
+  choice and of `provider_required`. When none can → `400 amount_too_small` / `amount_too_large`, with a message such
+  as "the total must be at least Rp 10.000 to pay online". Choosing such a provider explicitly gives the same error.
+
+  | provider | IDR | USD |
+  |---|---|---|
+  | Xendit | Rp 1.000 – Rp 1.000.000.000 | US$1 – US$999,999.99 |
+  | Midtrans | Rp 1.000 – Rp 1.000.000.000 | (IDR only) |
+  | Stripe | Rp 10.000 – Rp 9.999.999.999 | US$0.50 – US$999,999.99 |
+
+  These are conservative per-order bounds. A payment method may narrow them further (e.g. retail outlets from
+  Rp 10.000), and the provider's page shows that.
+- Other errors are as in (b): `invalid_options` (detail `items[i].options`), `not_for_sale` (detail `items[i]`),
+  `payments_unavailable`, `429`, `502 checkout_failed`.
+
+**Form mode (cart).** The same form post accepts `line.N.item`, `line.N.qty` and `line.N.option.<name>` for N = 0…19.
+Gaps are skipped, and a non-numeric quantity is `invalid_quantity`. Shipping uses `shipping.name`, `shipping.phone`,
+`shipping.address`, `shipping.city`, `shipping.postal_code`, `shipping.country` and `shipping.notes`.
+- On error the 303 goes back to `{APP_BASE_URL}/{u}/checkout?block=…&error=<code>`, carrying the cart in the same
+  field names (`line.N.item`, `line.N.qty`, `line.N.option.<name>`, bounded) and `field=<detail key>` for each failing
+  field (e.g. `field=shipping.phone`). Email, name and address are never echoed.
+- So the FE cart link has the same shape: `/{u}/checkout?block=<id>&line.0.item=tee&line.0.qty=2&line.0.option.Size=M&line.1.item=zine`.
+
+**Orders.** `items[]` gains `delivery: "ship"` on physical lines. The order gains:
+- Buyer view (`GET /public/{u}/orders/{id}`): `shipping_fee`, `fulfilment: null | "unfulfilled" | "shipped"`,
+  `tracking` and `shipped_at`. Never the address. `downloads` lists only the download lines, with `index` = the line's
+  position in `items`.
+- Owner `Order`: the same, plus `shipping: {name, phone, address, city, postal_code, country, notes} | null`.
+- `fulfilment` is null when nothing ships and `unfulfilled` until shipped.
+- The receipt adds a Shipping line and "<seller> will ship your order". The button reads "View your order" when
+  nothing downloads.
+
+**Fulfilment (owner).**
+- `POST /orders/{id}/ship {tracking?}` (tracking ≤100 characters) → the `GET /orders/{id}` shape.
+  - Only for paid orders that have items to ship; otherwise `409 not_shippable`.
+  - The first call sets `fulfilment: shipped` and `shipped_at`, then queues an `order_shipped` email (seller, order
+    code, tracking, order link) under the same caps as receipts.
+  - Later calls only update `tracking`; no second email.
+- `GET /orders?fulfilment=unfulfilled|shipped` filters the list. `unfulfilled` means paid and not shipped: the "To
+  ship" tab. `counts.to_ship` is the number of paid, unshipped orders; it follows `q` but not the filters.
+- `orders.csv` adds Shipping fee, Fulfilment, Tracking, Shipped at, Ship to, Phone, Address, City, Postal code, Country
+  and Delivery notes.
+
+**Migration** 000022 (`orders.shipping`, `shipping_fee`, `fulfilment`, `tracking`, `shipped_at`). It must deploy after
+000021 (tautan-6c's email change), because golang-migrate won't run a lower version once a higher one has run.
+
+**Not in (c):** stock counts (the `sold_out` badge stays), shipping on single `product` cards, and per-region or
+weight-based shipping rates.
+
 ## Performance budget for the public page `/[username]` (user requirement, 2026-11-16)
 
 The page visitors open from a bio link has to feel instant on a mid-range Android on 4G. Every PR that touches the public page states its numbers.
