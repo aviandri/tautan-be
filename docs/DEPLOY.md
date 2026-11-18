@@ -185,7 +185,7 @@ Replace `<domain>` with the real one. Run from a phone on mobile data where note
 
 **Payments** (once tautan-be #36 and its webhook PR are deployed)
 - ☐ The API starts with `APP_ENV=production` and logs no complaint about `PAYMENTS_ENCRYPTION_KEY`.
-- ☐ `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.<domain>/webhooks/xendit/00000000-0000-0000-0000-000000000000` returns the API's own 4xx JSON (not a Cloudflare challenge page or a 404 HTML from Caddy).
+- ☐ `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://api.<domain>/webhooks/xendit/00000000-0000-0000-0000-000000000000` returns the API's own 4xx JSON, not a Cloudflare challenge page. Before the webhook handler PR is deployed, chi's plain-text `404 page not found` is expected; it still proves the request reached the API.
 
 **Operations**
 - ☐ `ls backups/` shows a dump less than 24 h old, and R2 `tautan-backups/db` has it after the cron run.
