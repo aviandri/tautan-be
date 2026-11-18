@@ -28,7 +28,12 @@ type Server struct {
 	unfurlLimiter  *rateLimiter
 	engageLimiter  *rateLimiter
 	askLimiter     *rateLimiter
-	unlockLimiter  *rateLimiter
+	// Per-IP ceilings for poll votes and questions. The tight limiters above key on the
+	// first-party visitor id when the client sends one, so people sharing a carrier-NAT IP
+	// aren't refused; these cap what one IP can do by rotating ids.
+	engageIPLimiter *rateLimiter
+	askIPLimiter    *rateLimiter
+	unlockLimiter   *rateLimiter
 	// Payments: nil sealer = PAYMENTS_ENCRYPTION_KEY unset, payments off.
 	sealer              *payments.Sealer
 	providerTestLimiter *rateLimiter
@@ -59,18 +64,20 @@ type Server struct {
 func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 	s := &Server{
 		cfg: cfg, db: pool, now: time.Now,
-		eventLimiter:   newRateLimiter(120, time.Minute),
-		contactLimiter: newRateLimiter(5, 10*time.Minute),
-		formLimiter:    newRateLimiter(10, 10*time.Minute),
-		unfurlLimiter:  newRateLimiter(30, time.Minute),
-		engageLimiter:  newRateLimiter(30, 10*time.Minute),
-		askLimiter:     newRateLimiter(5, 10*time.Minute),
-		unlockLimiter:  newRateLimiter(10, 10*time.Minute),
-		resetLimiter:   newRateLimiter(10, 15*time.Minute),
-		mailWake:       make(chan struct{}, 1),
-		fetcher:        newSafeFetcher(false),
-		reval:          newRevalidator(),
-		proxy:          newProxyResolver(cfg),
+		eventLimiter:    newRateLimiter(120, time.Minute),
+		contactLimiter:  newRateLimiter(5, 10*time.Minute),
+		formLimiter:     newRateLimiter(10, 10*time.Minute),
+		unfurlLimiter:   newRateLimiter(30, time.Minute),
+		engageLimiter:   newRateLimiter(30, 10*time.Minute),
+		askLimiter:      newRateLimiter(5, 10*time.Minute),
+		engageIPLimiter: newRateLimiter(300, 10*time.Minute),
+		askIPLimiter:    newRateLimiter(60, 10*time.Minute),
+		unlockLimiter:   newRateLimiter(10, 10*time.Minute),
+		resetLimiter:    newRateLimiter(10, 15*time.Minute),
+		mailWake:        make(chan struct{}, 1),
+		fetcher:         newSafeFetcher(false),
+		reval:           newRevalidator(),
+		proxy:           newProxyResolver(cfg),
 
 		providerTestLimiter: newRateLimiter(20, 10*time.Minute),
 	}
@@ -152,6 +159,7 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/public/{username}/vcard", s.handleVCard)
 		r.Post("/public/{username}/blocks/{id}/unlock", s.handleUnlock)
 		r.Post("/public/{username}/blocks/{id}/vote", s.handlePollVote)
+		r.Get("/public/{username}/blocks/{id}/vote", s.handlePollStatus)
 		r.Post("/public/{username}/blocks/{id}/ask", s.handleAsk)
 		r.Post("/public/{username}/blocks/{id}/lead", s.handleLead)
 		r.Post("/public/{username}/blocks/{id}/enter", s.handleGiveawayEnter)
