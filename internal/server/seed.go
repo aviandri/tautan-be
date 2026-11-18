@@ -50,6 +50,10 @@ func (s *Server) SeedHeavy(ctx context.Context, full bool) (string, error) {
 		return "", err
 	}
 	sd.tok = auth.AccessToken
+	// Demo account: treat the address as confirmed so the page can be published.
+	if err := markVerified(ctx, s.db, auth.User.ID, s.now()); err != nil {
+		return "", err
+	}
 
 	img := func(w, h int, hue uint8) string {
 		if sd.err != nil {

@@ -85,8 +85,10 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	hashStr := string(hash)
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var err error
-		u, p, err = createAccount(ctx, tx, email, &hashStr, username, onboarding)
-		return err
+		if u, p, err = createAccount(ctx, tx, email, &hashStr, username, onboarding); err != nil {
+			return err
+		}
+		return s.queueVerification(ctx, tx, u.ID, email)
 	})
 	switch {
 	case isUniqueViolation(err, "users_email_key"):
@@ -250,16 +252,18 @@ func displayNameFor(username string) string {
 // meUser adds sign-in methods to User; only GET /me returns them.
 type meUser struct {
 	User
-	HasPassword bool     `json:"has_password"`
-	Identities  []string `json:"identities"` // linked providers, e.g. ["google"]
+	HasPassword   bool     `json:"has_password"`
+	Identities    []string `json:"identities"` // linked providers, e.g. ["google"]
+	EmailVerified bool     `json:"email_verified"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var u meUser
 	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash IS NOT NULL,
-		ARRAY(SELECT DISTINCT provider FROM user_identities WHERE user_id = users.id ORDER BY provider)
-		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities)
+		ARRAY(SELECT DISTINCT provider FROM user_identities WHERE user_id = users.id ORDER BY provider),
+		email_verified_at IS NOT NULL
+		FROM users WHERE id = $1`, userID(r)).Scan(&u.ID, &u.Email, &u.CreatedAt, &u.HasPassword, &u.Identities, &u.EmailVerified)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "user no longer exists")
 		return

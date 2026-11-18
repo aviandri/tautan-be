@@ -142,6 +142,7 @@ func (s *Server) Routes() http.Handler {
 		r.Post("/auth/google/callback", s.handleGoogleCallback)
 		r.Post("/auth/password/forgot", s.handleForgotPassword)
 		r.Post("/auth/password/reset", s.handleResetPassword)
+		r.Post("/auth/verify-email", s.handleVerifyEmail)
 
 		r.Get("/public/{username}", s.handlePublicPage)
 		r.Post("/public/{username}/events", s.handlePublicEvent)
@@ -160,6 +161,7 @@ func (s *Server) Routes() http.Handler {
 			r.Use(s.requireAuth)
 			r.Get("/me", s.handleMe)
 			r.Patch("/me/password", s.handleSetPassword)
+			r.Post("/me/verification-email", s.handleResendVerification)
 			r.Group(func(r chi.Router) {
 				r.Use(s.withProfile)
 				r.With(s.revalidatesPage).Patch("/profile", s.handlePatchProfile)

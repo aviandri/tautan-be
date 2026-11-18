@@ -32,13 +32,24 @@ func (c *captureMailer) Send(_ context.Context, m mail.Message) error {
 	return nil
 }
 
-func (c *captureMailer) take() []mail.Message {
+func (c *captureMailer) take() []mail.Message { return c.takeSubject("") }
+
+// takeSubject drains the captured messages and returns those with subject
+// (all of them when subject is empty).
+func (c *captureMailer) takeSubject(subject string) []mail.Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := c.sent
+	var out []mail.Message
+	for _, m := range c.sent {
+		if subject == "" || m.Subject == subject {
+			out = append(out, m)
+		}
+	}
 	c.sent = nil
 	return out
 }
+
+const resetSubject = "Reset your Tautan password"
 
 // mailServer is a test server with a capturing mailer and a settable clock.
 func mailServer(t *testing.T) (*Server, http.Handler, *captureMailer, *time.Time) {
@@ -82,10 +93,8 @@ func TestPasswordResetFlow(t *testing.T) {
 	// Unknown emails look exactly the same and send nothing.
 	do(t, h, "POST", "/api/v1/auth/password/forgot", map[string]string{"email": "nobody@example.com"}).expect(202)
 	do(t, h, "POST", "/api/v1/auth/password/forgot", map[string]string{"email": "RINA@example.com"}).expect(202)
-	if n := deliver(t, s); n != 1 {
-		t.Fatalf("delivered %d", n)
-	}
-	msgs := m.take()
+	deliver(t, s)
+	msgs := m.takeSubject(resetSubject)
 	if len(msgs) != 1 || msgs[0].To != "rina@example.com" || msgs[0].Subject != "Reset your Tautan password" || msgs[0].HTML == "" {
 		t.Fatalf("sent = %+v", msgs)
 	}
@@ -93,7 +102,7 @@ func TestPasswordResetFlow(t *testing.T) {
 
 	// The sent row no longer holds the link.
 	var status, body string
-	_ = testPool.QueryRow(t.Context(), `SELECT status, text_body FROM email_outbox`).Scan(&status, &body)
+	_ = testPool.QueryRow(t.Context(), `SELECT status, text_body FROM email_outbox WHERE kind = 'password_reset'`).Scan(&status, &body)
 	if status != "sent" || body != "" {
 		t.Errorf("outbox row = %s %q", status, body)
 	}
@@ -129,7 +138,7 @@ func TestPasswordResetExpiryAndSiblings(t *testing.T) {
 	do(t, h, "POST", "/api/v1/auth/password/forgot", map[string]string{"email": email}).expect(202)
 	do(t, h, "POST", "/api/v1/auth/password/forgot", map[string]string{"email": email}).expect(202)
 	deliver(t, s)
-	msgs := m.take()
+	msgs := m.takeSubject(resetSubject)
 	if len(msgs) != 2 {
 		t.Fatalf("sent %d", len(msgs))
 	}
@@ -152,7 +161,7 @@ func TestPasswordResetHourlyCap(t *testing.T) {
 		do(t, h, "POST", "/api/v1/auth/password/forgot", map[string]string{"email": "cap@example.com"}).expect(202)
 	}
 	deliver(t, s)
-	if n := len(m.take()); n != resetPerHour {
+	if n := len(m.takeSubject(resetSubject)); n != resetPerHour {
 		t.Fatalf("sent %d, want %d", n, resetPerHour)
 	}
 }

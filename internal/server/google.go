@@ -217,10 +217,11 @@ type googleResolution struct {
 // that goes through onboarding with a temporary username, like a signup
 // without a username.
 //
-// Signup doesn't verify emails, so whoever set an existing account's password
-// may not own its email (account pre-hijacking). When Google is the first to
-// prove ownership (the account has no identity yet), the takeover is undone:
-// the password is cleared and every existing session is revoked.
+// Whoever set an unverified account's password may not own its email
+// (account pre-hijacking). When Google is the first to prove ownership (no
+// identity yet and email_verified_at is null), the takeover is undone: the
+// password is cleared and every existing session is revoked. Verified
+// accounts keep their password and sessions.
 func (s *Server) resolveGoogleUser(ctx context.Context, sub, email, wantUsername string) (res googleResolution, err error) {
 	u := &res.user
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -237,7 +238,7 @@ func (s *Server) resolveGoogleUser(ctx context.Context, sub, email, wantUsername
 		var hasPassword, verified bool
 		err = tx.QueryRow(ctx,
 			`SELECT id, email, created_at, password_hash IS NOT NULL,
-			        EXISTS (SELECT 1 FROM user_identities WHERE user_id = users.id)
+			        email_verified_at IS NOT NULL OR EXISTS (SELECT 1 FROM user_identities WHERE user_id = users.id)
 			 FROM users WHERE email = $1 FOR UPDATE`, email).
 			Scan(&u.ID, &u.Email, &u.CreatedAt, &hasPassword, &verified)
 		switch {
@@ -264,9 +265,11 @@ func (s *Server) resolveGoogleUser(ctx context.Context, sub, email, wantUsername
 			}
 			res.passwordRemoved = hasPassword
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)`,
-			providerGoogle, sub, u.ID, email)
-		return err
+		if _, err = tx.Exec(ctx, `INSERT INTO user_identities (provider, subject, user_id, email) VALUES ($1, $2, $3, $4)`,
+			providerGoogle, sub, u.ID, email); err != nil {
+			return err
+		}
+		return markVerified(ctx, tx, u.ID, s.now())
 	})
 	return res, err
 }

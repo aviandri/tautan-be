@@ -266,12 +266,9 @@ func TestGoogleLinksExistingAccountByVerifiedEmail(t *testing.T) {
 	if err := testPool.QueryRow(t.Context(), `SELECT count(*) FROM user_identities WHERE user_id = $1`, existing.User.ID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("identities = %d, %v", n, err)
 	}
-	// The first Google link removes the (unverified) password; see
-	// TestGoogleLinkUndoesPreHijack.
-	if code := do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": existing.User.Email, "password": "password123"}).
-		expect(401).errCode(); code != "password_not_set" {
-		t.Errorf("code = %s", code)
-	}
+	// The account's email was already confirmed (signup helper), so the link
+	// keeps its password; unverified accounts lose it (TestGoogleLinkUndoesPreHijack).
+	do(t, h, "POST", "/api/v1/auth/login", map[string]string{"email": existing.User.Email, "password": "password123"}).expect(200)
 
 	// Even if the Google email changes later, the subject keeps the link.
 	c, code, state = f.start(t, h, jwt.MapClaims{"sub": "g-alice", "email": "alice.new@example.com"})
