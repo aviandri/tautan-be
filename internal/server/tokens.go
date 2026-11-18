@@ -68,24 +68,43 @@ func (s *Server) issueRefreshToken(ctx context.Context, w http.ResponseWriter, u
 }
 
 func (s *Server) setRefreshCookie(w http.ResponseWriter, value string, exp time.Time) {
+	http.SetCookie(w, s.cookie(refreshCookie, value, "/api/v1/auth", exp))
+}
+
+// cookie builds an API cookie with the deployment's attributes: httpOnly,
+// Secure from COOKIE_SECURE, SameSite from COOKIE_SAMESITE and Domain from
+// COOKIE_DOMAIN. An empty value builds a deletion cookie. Every cookie the API
+// sets goes through here (refresh token, OAuth state), so they all work in the
+// same FE/API layout.
+//
+// Lax suits the recommended layout (FE on tautan.id, API on api.tautan.id):
+// those are the same site, so credentialed fetches from the FE carry Lax
+// cookies. Use none only when the FE and API are on different registrable
+// domains; Safari and other browsers that block third-party cookies may then
+// drop them anyway.
+func (s *Server) cookie(name, value, path string, exp time.Time) *http.Cookie {
 	c := &http.Cookie{
-		Name:     refreshCookie,
+		Name:     name,
 		Value:    value,
-		Path:     "/api/v1/auth",
+		Path:     path,
+		Domain:   s.cfg.CookieDomain,
 		HttpOnly: true,
 		Secure:   s.cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  exp,
 	}
-	if s.cfg.CookieSecure {
-		// Cross-site deployments (FE and API on different sites) need SameSite=None.
+	switch s.cfg.CookieSameSite {
+	case "strict":
+		c.SameSite = http.SameSiteStrictMode
+	case "none":
 		c.SameSite = http.SameSiteNoneMode
+		c.Secure = true // browsers reject SameSite=None without Secure
 	}
 	if value == "" {
 		c.MaxAge = -1
 		c.Expires = time.Unix(0, 0)
 	}
-	http.SetCookie(w, c)
+	return c
 }
 
 // requireAuth validates the Bearer token and stores the user id in the context.

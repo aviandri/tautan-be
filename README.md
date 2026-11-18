@@ -31,13 +31,17 @@ and the older `/healthz` and `/api/v1/health` (DB ping).
 | `UPLOAD_DIR` | `./uploads` | served at `/uploads/*` |
 | `PUBLIC_BASE_URL` | `http://localhost:8080` | used to build upload URLs |
 | `COOKIE_SECURE` | `false` | set `true` behind HTTPS |
-| `COUNTRY_HEADER` | `CF-IPCountry` | header holding the visitor's country code |
+| `COOKIE_SAMESITE` | `lax` | `lax` / `strict` / `none`. Lax works when FE and API share a registrable domain (`tautan.id` + `api.tautan.id`); `none` (forces Secure) only for different domains |
+| `COOKIE_DOMAIN` | (host-only) | e.g. `.tautan.id` to share cookies across subdomains; normally leave empty |
+| `COUNTRY_HEADER` | `CF-IPCountry` | header holding the visitor's country code (`X-Vercel-IP-Country` etc.); read only from a trusted proxy |
+| `TRUSTED_PROXIES` | (none) | comma list of IPs/CIDRs plus `private`, `cloudflare`, `*`. Only these peers' forwarding headers are believed |
+| `CLIENT_IP_HEADER` | `X-Forwarded-For` | XFF is walked right-to-left skipping trusted hops; or a single-IP header such as `CF-Connecting-IP` / `Fly-Client-IP` |
 | `APP_BASE_URL` | `http://localhost:3000` | public FE origin (page URL in vCards) |
 | `APP_ENV` | `development` | `production` refuses to start with unsafe settings (dev JWT secret, http URLs, `COOKIE_SECURE=false`) |
 | `LOG_FORMAT` / `LOG_LEVEL` | `text` (`json` in production) / `info` | structured logs via `log/slog` |
 | `MIGRATE_ON_START` | `true` | set `false` and run `api migrate` as a release step instead |
 | `SHUTDOWN_DELAY` / `SHUTDOWN_TIMEOUT` | `0s` / `15s` | on SIGTERM `/readyz` fails for the delay, then requests drain |
-| `TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP (rate limits); enable only behind your own proxy |
+| `TRUST_PROXY` | `false` | legacy: `true` = `TRUSTED_PROXIES=*` (spoofable; prefer explicit ranges) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | (empty) | Google sign-in; the feature is off unless these and `GOOGLE_REDIRECT_URL` are set. The secret is a secret. |
 | `GOOGLE_REDIRECT_URL` | (empty) | the FE callback page, e.g. `http://localhost:3000/auth/google/callback` |
 | `GOOGLE_ISSUER` | `https://accounts.google.com` | OIDC issuer for discovery (only tests change it) |
@@ -69,9 +73,10 @@ the code to the API. That means the redirect URI registered at Google is the FE 
 
 Notes:
 - The flow keeps state, nonce and the PKCE verifier in a 10-minute httpOnly cookie
-  (`tautan_oauth`, path `/api/v1/auth/google`). It follows the refresh cookie's
-  SameSite/Secure rules, so the FE and API must be same-site, or the API must run with
-  `COOKIE_SECURE=true` (HTTPS).
+  (`tautan_oauth`, path `/api/v1/auth/google`). It is built by the same `s.cookie()` helper
+  as the refresh cookie (`COOKIE_SECURE`, `COOKIE_SAMESITE`, `COOKIE_DOMAIN`), so it works
+  wherever login works: FE and API same-site with the default `lax`, or `COOKIE_SAMESITE=none`
+  over HTTPS for different domains.
 - A Google account whose **verified** email matches an existing account is linked to it.
   Otherwise a new account is created and goes through onboarding with a temporary
   username, like a signup without a username. Unverified emails are rejected (403 `email_not_verified`).

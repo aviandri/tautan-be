@@ -60,7 +60,11 @@ func TestPublicPage(t *testing.T) {
 }
 
 func TestPublicEvents(t *testing.T) {
-	_, h := newTestServer(t)
+	s, _ := newTestServer(t)
+	// httptest requests come from 192.0.2.1: trust it so CF-IPCountry counts.
+	s.cfg.TrustedProxies = []string{"192.0.2.0/24"}
+	s.proxy = newProxyResolver(s.cfg)
+	h := s.Routes()
 	f := setupPage(t, h, "alice", true)
 	setupPage(t, h, "draft", false)
 	other := setupPage(t, h, "bob", true)
