@@ -23,7 +23,9 @@
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
-		Referrer-Policy strict-origin-when-cross-origin
+		# a default only: pages that send a stricter policy keep it (the buyer order page sends
+		# no-referrer so its ?t= token never leaves in a Referer)
+		?Referrer-Policy strict-origin-when-cross-origin
 		-Server
 	}
 	# Capability tokens travel in query strings: buyer order links (?t=), email confirm and password
