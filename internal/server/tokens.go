@@ -52,8 +52,10 @@ func hashToken(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// issueRefreshToken stores a new refresh token and sets it as an httpOnly cookie.
-func (s *Server) issueRefreshToken(ctx context.Context, w http.ResponseWriter, userID string) error {
+// issueRefreshToken stores a new refresh token and sets it as an httpOnly
+// cookie. family is the rotation chain it continues; "" starts a new one
+// (a fresh sign-in).
+func (s *Server) issueRefreshToken(ctx context.Context, w http.ResponseWriter, userID, family string) error {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return err
@@ -61,8 +63,8 @@ func (s *Server) issueRefreshToken(ctx context.Context, w http.ResponseWriter, u
 	raw := base64.RawURLEncoding.EncodeToString(b)
 	exp := s.now().Add(s.cfg.RefreshTTL)
 	if _, err := s.db.Exec(ctx,
-		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
-		userID, hashToken(raw), exp); err != nil {
+		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at, family_id) VALUES ($1, $2, $3, COALESCE(NULLIF($4, '')::uuid, gen_random_uuid()))`,
+		userID, hashToken(raw), exp, family); err != nil {
 		return err
 	}
 	s.setRefreshCookie(w, raw, exp)
