@@ -51,6 +51,10 @@ and the older `/healthz` and `/api/v1/health` (DB ping).
 | `GOOGLE_ISSUER` | `https://accounts.google.com` | OIDC issuer for discovery (only tests change it) |
 | `PAYMENTS_ENCRYPTION_KEY` | (empty; `make dev` uses a built-in dev key) | 32-byte key, base64 or hex (`openssl rand -base64 32`), that encrypts creators' payment provider keys at rest (AES-256-GCM). Required when `APP_ENV=production`; elsewhere payments are off while it is empty; a malformed key stops the API from starting. A secret: losing it means every creator re-enters their keys. |
 | `PAYMENTS_ENCRYPTION_KEYS_OLD` | (empty) | comma-separated retired keys, still accepted for reading during a rotation. Rows are re-sealed with the current key on their next save. |
+| `MAIL_DRIVER` | `log` | `log` writes emails to the log instead of sending (full bodies, with links, only outside production); `smtp` sends |
+| `MAIL_FROM` | `Tautan <no-reply@localhost>` | sender, e.g. `Tautan <hello@mail.tautan.id>` |
+| `SMTP_HOST` / `SMTP_PORT` | (empty) / `587` | relay; 587 uses STARTTLS, 465 implicit TLS |
+| `SMTP_USERNAME` / `SMTP_PASSWORD` | (empty) | relay credentials (the password is a secret) |
 
 ## Google sign-in setup
 
@@ -90,6 +94,22 @@ Notes:
   Otherwise a new account is created and goes through onboarding with a temporary
   username, like a signup without a username. Unverified emails are rejected (403 `email_not_verified`).
 - Tests use a fake OIDC server (`internal/server/google_test.go`), so CI needs no real credentials.
+
+## Email
+
+Handlers never send directly. They insert into `email_outbox` (inside their transaction),
+and a background worker delivers with retries: 30 s backoff doubling to 1 h, 8 attempts,
+then `failed`. Bodies are cleared once a message is sent or fails, because they hold live links.
+
+- Local dev: the default `MAIL_DRIVER=log` prints each message, including reset links, to
+  the API log. No account is needed.
+- Production: any SMTP relay works. For example, Resend uses `SMTP_HOST=smtp.resend.com`,
+  `SMTP_PORT=587`, `SMTP_USERNAME=resend` and `SMTP_PASSWORD=<api key>`; Amazon SES and
+  Postmark work the same way with their SMTP credentials.
+- DNS: send from a subdomain (e.g. `mail.tautan.id`) and add the provider's SPF and DKIM
+  records plus a DMARC record in Cloudflare.
+- New features send mail with `s.enqueueEmail(ctx, tx, kind, mail.Message{...})`. Put
+  templates in `internal/mail/templates.go`.
 
 ## Layout
 

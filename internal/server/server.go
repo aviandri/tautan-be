@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/aviandri/tautan-be/internal/config"
+	"github.com/aviandri/tautan-be/internal/mail"
 	"github.com/aviandri/tautan-be/internal/payments"
 	"github.com/aviandri/tautan-be/internal/storage"
 )
@@ -38,6 +39,9 @@ type Server struct {
 	reval          *revalidator
 	remote         remoteWorker
 	google         *oidcClient // nil when Google sign-in is not configured
+	mailer         mail.Sender
+	mailWake       chan struct{}
+	resetLimiter   *rateLimiter
 	// InlineRemote resolves oEmbed/RSS content during the save request (tests, seeding).
 	InlineRemote bool
 	// InlineImages encodes image variants during the upload request (tests, seeding).
@@ -62,6 +66,8 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		engageLimiter:  newRateLimiter(30, 10*time.Minute),
 		askLimiter:     newRateLimiter(5, 10*time.Minute),
 		unlockLimiter:  newRateLimiter(10, 10*time.Minute),
+		resetLimiter:   newRateLimiter(10, 15*time.Minute),
+		mailWake:       make(chan struct{}, 1),
 		fetcher:        newSafeFetcher(false),
 		reval:          newRevalidator(),
 		proxy:          newProxyResolver(cfg),
@@ -74,11 +80,26 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		log.Printf("payments disabled: %v", err)
 	}
 	s.sealer = sealer
+	// Run rejects a bad mail config first (MailConfig); fall back to the log driver here.
+	if m, err := mail.New(MailConfig(cfg)); err == nil {
+		s.mailer = m
+	} else {
+		s.mailer = mail.Log{}
+	}
 	if cfg.GoogleEnabled() {
 		s.google = newOIDCClient(cfg.GoogleIssuer, cfg.GoogleClientID, cfg.GoogleClientSecret, cfg.GoogleRedirectURL,
 			func() time.Time { return s.now() })
 	}
 	return s
+}
+
+// MailConfig maps the env config onto the mail package's.
+func MailConfig(cfg config.Config) mail.Config {
+	return mail.Config{
+		Driver: cfg.MailDriver, From: cfg.MailFrom,
+		Host: cfg.SMTPHost, Port: cfg.SMTPPort, Username: cfg.SMTPUsername, Password: cfg.SMTPPassword,
+		ShowBodies: !cfg.Production(),
+	}
 }
 
 // newProxyResolver builds the resolver; Run has already rejected bad
@@ -119,6 +140,8 @@ func (s *Server) Routes() http.Handler {
 		r.Get("/auth/providers", s.handleAuthProviders)
 		r.Get("/auth/google/start", s.handleGoogleStart)
 		r.Post("/auth/google/callback", s.handleGoogleCallback)
+		r.Post("/auth/password/forgot", s.handleForgotPassword)
+		r.Post("/auth/password/reset", s.handleResetPassword)
 
 		r.Get("/public/{username}", s.handlePublicPage)
 		r.Post("/public/{username}/events", s.handlePublicEvent)

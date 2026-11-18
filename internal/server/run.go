@@ -11,6 +11,7 @@ import (
 
 	"github.com/aviandri/tautan-be/internal/config"
 	"github.com/aviandri/tautan-be/internal/db"
+	"github.com/aviandri/tautan-be/internal/mail"
 	"github.com/aviandri/tautan-be/internal/payments"
 )
 
@@ -31,6 +32,12 @@ func Run(cfg config.Config) error {
 	}
 	if _, err := payments.NewSealer(cfg.PaymentsEncryptionKey, cfg.PaymentsEncryptionKeysOld); err != nil {
 		return err
+	}
+	if _, err := mail.New(MailConfig(cfg)); err != nil {
+		return err
+	}
+	if cfg.Production() && (cfg.MailDriver == "" || cfg.MailDriver == "log") {
+		slog.Warn("MAIL_DRIVER=log: emails (password resets) are logged, not sent; set MAIL_DRIVER=smtp")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -56,6 +63,7 @@ func Run(cfg config.Config) error {
 	workers, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 	go api.RunRemoteRefresher(workers)
+	go api.RunMailer(workers)
 	go func() {
 		if err := api.ResumeImages(workers); err != nil {
 			slog.Error("resume image variants", "err", err)
