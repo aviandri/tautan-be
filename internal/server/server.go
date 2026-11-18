@@ -234,6 +234,7 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/orders.csv", s.handleOrdersCSV)
 				r.Get("/orders/{id}", s.handleGetOrder)
 				r.Post("/orders/{id}/refresh", s.handleRefreshOrder)
+				r.Post("/orders/{id}/ship", s.handleShipOrder)
 				r.Route("/payments/providers", func(r chi.Router) {
 					r.Get("/", s.handleListProviders)
 					r.Group(func(r chi.Router) {

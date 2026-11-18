@@ -35,6 +35,9 @@ type (
 		// checkout only (payments b): the digital file delivered after payment.
 		// Never part of public reads.
 		Download *DownloadFile `json:"download,omitempty"`
+		// checkout only (payments c): "download" (default) or "ship" — a
+		// physical shop item; the buyer gives a shipping address.
+		Delivery string `json:"delivery,omitempty"`
 	}
 	ProductData struct {
 		ID          string           `json:"id,omitempty"` // shop items only
@@ -55,7 +58,10 @@ type (
 		Title      string        `json:"title,omitempty"`
 		Categories []string      `json:"categories,omitempty"`
 		Items      []ProductData `json:"items"`
-		Schedule   *Schedule     `json:"schedule,omitempty"`
+		// payments c: flat shipping per order when the cart has a "ship" item,
+		// in the shop's checkout currency (minor units).
+		ShippingFee *int64    `json:"shipping_fee,omitempty"`
+		Schedule    *Schedule `json:"schedule,omitempty"`
 	}
 	MarketplaceStore struct {
 		Platform string `json:"platform"`
@@ -265,11 +271,20 @@ func checkSellAction(p string, a *SellAction) error {
 		return err
 	}
 	if a.Kind != "checkout" {
-		a.Download = nil
+		a.Download, a.Delivery = nil, ""
 	}
 	switch a.Kind {
 	case "checkout":
 		a.URL, a.WANumber, a.WATemplate, a.Marketplace = "", "", "", ""
+		switch a.Delivery {
+		case "", "download":
+			a.Delivery = ""
+		case "ship":
+			a.Download = nil // nothing to download: the seller ships it
+			return nil
+		default:
+			return ferr(p+".delivery", "%s.delivery must be download or ship", p)
+		}
 		if a.Download == nil {
 			return ferr(p+".download.url", "%s.download.url is required for checkout", p)
 		}
@@ -398,6 +413,39 @@ func checkShop(d *ShopData) error {
 		if it.Category != "" && !cats[it.Category] {
 			return ferr(p+"category", "%scategory must be one of categories", p)
 		}
+	}
+	return checkShopCart(d)
+}
+
+// checkShopCart (payments c): a shop's checkout items go in one cart, so they
+// share one currency, and the flat shipping fee is in that currency.
+func checkShopCart(d *ShopData) error {
+	currency := ""
+	for i, it := range d.Items {
+		if it.Action.Kind != "checkout" {
+			continue
+		}
+		if currency == "" {
+			currency = it.Currency
+		} else if it.Currency != currency {
+			return ferr(fmt.Sprintf("items[%d].currency", i), "items[%d].currency: checkout items in one shop share a cart, so they must all use %s", i, currency)
+		}
+	}
+	if d.ShippingFee == nil {
+		return nil
+	}
+	if *d.ShippingFee == 0 {
+		d.ShippingFee = nil // free shipping
+		return nil
+	}
+	if *d.ShippingFee < 0 || *d.ShippingFee > maxMoney {
+		return ferr("shipping_fee", "shipping_fee must be 0 or more (minor units)")
+	}
+	if currency == "" {
+		currency = "IDR"
+	}
+	if currency == "IDR" && *d.ShippingFee%100 != 0 {
+		return ferr("shipping_fee", "shipping_fee must be whole rupiah (a multiple of 100 minor units)")
 	}
 	return nil
 }
@@ -661,7 +709,16 @@ func sellBlock(typ string) (v any, check func() error, sched func() *Schedule, o
 	switch typ {
 	case "product":
 		d := &ProductData{}
-		return d, func() error { d.ID, d.Category = "", ""; return checkProduct("", d) }, func() *Schedule { return d.Schedule }, true
+		return d, func() error {
+			d.ID, d.Category = "", ""
+			if err := checkProduct("", d); err != nil {
+				return err
+			}
+			if d.Action.Delivery == "ship" {
+				return ferr("action.delivery", "action.delivery: shipping is available for shop items; use a shop card to sell physical goods")
+			}
+			return nil
+		}, func() *Schedule { return d.Schedule }, true
 	case "shop":
 		d := &ShopData{}
 		return d, func() error { return checkShop(d) }, func() *Schedule { return d.Schedule }, true

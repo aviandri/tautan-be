@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -89,6 +91,12 @@ func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
 			in.Options[name] = v[0]
 		}
 	}
+	in.Items = formCartLines(f)
+	if hasShippingFields(f) {
+		in.Shipping = &ShippingAddress{Name: f.Get("shipping.name"), Phone: f.Get("shipping.phone"),
+			Address: f.Get("shipping.address"), City: f.Get("shipping.city"), PostalCode: f.Get("shipping.postal_code"),
+			Country: f.Get("shipping.country"), Notes: f.Get("shipping.notes")}
+	}
 	status, out := runAsJSON(s.handleCreateOrder, r, in)
 	if status == http.StatusCreated {
 		if u, _ := out["checkout_url"].(string); strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
@@ -105,7 +113,75 @@ func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
 	if itemIDRE.MatchString(in.ItemID) {
 		q.Set("item", in.ItemID)
 	}
+	// The cart comes back in the same field names (bounded). Contact and
+	// shipping fields never go in the URL.
+	if len(in.Items) > 0 {
+		for i, l := range in.Items {
+			if !itemIDRE.MatchString(l.ItemID) {
+				continue
+			}
+			n := "line." + strconv.Itoa(i) + "."
+			q.Set(n+"item", l.ItemID)
+			if l.Quantity > 0 && l.Quantity <= maxShipQty {
+				q.Set(n+"qty", strconv.Itoa(l.Quantity))
+			}
+			kept := 0
+			for name, v := range l.Options {
+				if kept < 3 && utf8.RuneCountInString(name) <= 30 && utf8.RuneCountInString(v) <= 30 {
+					q.Set(n+"option."+name, v)
+					kept++
+				}
+			}
+		}
+	}
+	// Which field failed (keys are ours, never the buyer's values).
+	if e, ok := out["error"].(map[string]any); ok {
+		if d, ok := e["details"].(map[string]any); ok {
+			for k := range d {
+				if strings.HasPrefix(k, "items[") || strings.HasPrefix(k, "shipping.") {
+					q.Add("field", k)
+				}
+			}
+		}
+	}
 	seeOther(w, r, s.cfg.AppBaseURL+"/"+url.PathEscape(username)+"/checkout?"+q.Encode())
+}
+
+// formCartLines reads line.N.item, line.N.qty and line.N.option.<name> for
+// N in 0..19, in order; gaps are skipped.
+func formCartLines(f url.Values) []cartLineIn {
+	var out []cartLineIn
+	for i := 0; i < maxCartLines; i++ {
+		n := "line." + strconv.Itoa(i) + "."
+		id := f.Get(n + "item")
+		if id == "" {
+			continue
+		}
+		l := cartLineIn{ItemID: id, Options: map[string]string{}}
+		if q := f.Get(n + "qty"); q != "" {
+			v, err := strconv.Atoi(q)
+			if err != nil || v < 1 {
+				v = -1 // rejected as invalid_quantity
+			}
+			l.Quantity = v
+		}
+		for k, v := range f {
+			if name, ok := strings.CutPrefix(k, n+"option."); ok && len(v) > 0 {
+				l.Options[name] = v[0]
+			}
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+func hasShippingFields(f url.Values) bool {
+	for k := range f {
+		if strings.HasPrefix(k, "shipping.") {
+			return true
+		}
+	}
+	return false
 }
 
 // POST /public/{username}/orders/lookup as a form: email, code.

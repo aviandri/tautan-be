@@ -624,13 +624,13 @@ func TestOrderLocalDownload(t *testing.T) {
 	}
 	resp{rec, t}.expect(201).json(&up)
 	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{
-		"title": "Guide", "url": up.URL, "file_name": "Guide.pdf", "price": 500000}}, bearer(fx.tok)).expect(200)
+		"title": "Guide", "url": up.URL, "file_name": "Guide.pdf", "price": 1500000}}, bearer(fx.tok)).expect(200)
 	fx.connect(t, "stripe", map[string]any{"mode": "sandbox", "secret_key": "sk_test_good", "webhook_secret": "whsec_s"})
 	var o createOrderResp
 	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "d@example.com"}).expect(201).json(&o)
 	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
 	stripeHook(t, h, fx.pid, "whsec_s", map[string]any{"id": "evt_l", "type": "checkout.session.completed", "data": map[string]any{"object": map[string]any{
-		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 500000, "currency": "idr"}}}).expect(200)
+		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 1500000, "currency": "idr"}}}).expect(200)
 	got := fx.order(t, o)
 	if len(got.Downloads) != 1 {
 		t.Fatalf("downloads = %+v", got)
@@ -757,7 +757,7 @@ func TestPrivateDeliverables(t *testing.T) {
 	// A public upload gets a price: the card now points at a private copy.
 	pub := upload(fx.tok, "file")
 	var b Block
-	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide", "url": pub, "price": 500000}}, bearer(fx.tok)).expect(200).json(&b)
+	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide", "url": pub, "price": 1500000}}, bearer(fx.tok)).expect(200).json(&b)
 	var d FileData
 	_ = json.Unmarshal(b.Data, &d)
 	if d.URL == pub || !strings.Contains(d.URL, "/uploads/p_") {
@@ -765,7 +765,7 @@ func TestPrivateDeliverables(t *testing.T) {
 	}
 	do(t, h, "GET", pathOf(d.URL), nil).expect(404) // never served publicly
 	// Saving again keeps the same private file.
-	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide 2", "url": d.URL, "price": 500000}}, bearer(fx.tok)).expect(200).json(&b)
+	do(t, h, "PATCH", "/api/v1/blocks/"+fx.file.ID, map[string]any{"data": map[string]any{"title": "Guide 2", "url": d.URL, "price": 1500000}}, bearer(fx.tok)).expect(200).json(&b)
 	if !strings.Contains(string(b.Data), d.URL) {
 		t.Fatalf("private url changed on re-save: %s", b.Data)
 	}
@@ -791,7 +791,7 @@ func TestPrivateDeliverables(t *testing.T) {
 	do(t, h, "POST", "/api/v1/public/seller/orders", map[string]any{"block_id": fx.file.ID, "email": "p@example.com"}).expect(201).json(&o)
 	ref := strings.TrimPrefix(o.CheckoutURL, "https://checkout.stripe.test/")
 	stripeHook(t, h, fx.pid, "whsec_s", map[string]any{"id": "evt_p", "type": "checkout.session.completed", "data": map[string]any{"object": map[string]any{
-		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 500000, "currency": "idr"}}}).expect(200)
+		"id": ref, "status": "complete", "payment_status": "paid", "client_reference_id": o.OrderID, "amount_total": 1500000, "currency": "idr"}}}).expect(200)
 	dl := pathOf(fx.order(t, o).Downloads[0].URL)
 	do(t, h, "GET", dl, nil).expect(200)
 	do(t, h, "GET", dl, nil, withHeader("Range", "bytes=10-")).expect(206)
