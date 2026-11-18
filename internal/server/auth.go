@@ -64,7 +64,6 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_username", "username must be 3-30 chars of a-z, 0-9, _ or . and not reserved")
 		return
 	}
-	onboardingJSON, _ := json.Marshal(onboarding)
 	if onboarding.UsernameClaimed {
 		if taken, err := s.usernameTaken(r.Context(), username, ""); err != nil {
 			s.internalError(w, err)
@@ -83,19 +82,10 @@ func (s *Server) handleSignup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var u User
 	var p Profile
+	hashStr := string(hash)
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx,
-			`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at`,
-			email, string(hash)).Scan(&u.ID, &u.Email, &u.CreatedAt); err != nil {
-			return err
-		}
-		p, err = scanProfile(tx.QueryRow(ctx,
-			`INSERT INTO profiles (user_id, username, display_name, theme, onboarding) VALUES ($1, $2, $3, $4, $5) RETURNING `+profileCols,
-			u.ID, username, displayNameFor(username), DefaultTheme, onboardingJSON))
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO tabs (profile_id, title, slug, position) VALUES ($1, 'Links', 'links', 0)`, p.ID)
+		var err error
+		u, p, err = createAccount(ctx, tx, email, &hashStr, username, onboarding)
 		return err
 	})
 	switch {
@@ -120,7 +110,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var u User
 	var hash string
-	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, password_hash FROM users WHERE email = $1`,
+	// Accounts created through Google have no password; '' never matches.
+	err := s.db.QueryRow(ctx, `SELECT id, email, created_at, COALESCE(password_hash, '') FROM users WHERE email = $1`,
 		strings.TrimSpace(in.Email)).Scan(&u.ID, &u.Email, &u.CreatedAt, &hash)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		s.internalError(w, err)
@@ -138,11 +129,37 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.respondWithSession(ctx, w, http.StatusOK, u, p)
 }
 
-func (s *Server) respondWithSession(ctx context.Context, w http.ResponseWriter, status int, u User, p Profile) {
-	tok, err := s.issueAccessToken(u.ID)
-	if err == nil {
-		err = s.issueRefreshToken(ctx, w, u.ID)
+// createAccount inserts a user (passwordHash nil for identity-provider
+// accounts), their profile and the default tab.
+func createAccount(ctx context.Context, tx pgx.Tx, email string, passwordHash *string, username string, onboarding Onboarding) (User, Profile, error) {
+	var u User
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at`,
+		email, passwordHash).Scan(&u.ID, &u.Email, &u.CreatedAt); err != nil {
+		return u, Profile{}, err
 	}
+	onboardingJSON, _ := json.Marshal(onboarding)
+	p, err := scanProfile(tx.QueryRow(ctx,
+		`INSERT INTO profiles (user_id, username, display_name, theme, onboarding) VALUES ($1, $2, $3, $4, $5) RETURNING `+profileCols,
+		u.ID, username, displayNameFor(username), DefaultTheme, onboardingJSON))
+	if err != nil {
+		return u, p, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO tabs (profile_id, title, slug, position) VALUES ($1, 'Links', 'links', 0)`, p.ID)
+	return u, p, err
+}
+
+// issueSession issues an access token and sets a new refresh cookie.
+func (s *Server) issueSession(ctx context.Context, w http.ResponseWriter, uid string) (string, error) {
+	tok, err := s.issueAccessToken(uid)
+	if err == nil {
+		err = s.issueRefreshToken(ctx, w, uid)
+	}
+	return tok, err
+}
+
+func (s *Server) respondWithSession(ctx context.Context, w http.ResponseWriter, status int, u User, p Profile) {
+	tok, err := s.issueSession(ctx, w, u.ID)
 	if err != nil {
 		s.internalError(w, err)
 		return
