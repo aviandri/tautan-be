@@ -52,6 +52,8 @@ type Server struct {
 	mailer         mail.Sender
 	mailWake       chan struct{}
 	resetLimiter   *rateLimiter
+	// Lead-magnet emails per card per hour (on top of per-IP and per-recipient caps).
+	leadPageLimiter *rateLimiter
 	// InlineRemote resolves oEmbed/RSS content during the save request (tests, seeding).
 	InlineRemote bool
 	// InlineImages encodes image variants during the upload request (tests, seeding).
@@ -79,6 +81,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		askIPLimiter:    newRateLimiter(60, 10*time.Minute),
 		unlockLimiter:   newRateLimiter(10, 10*time.Minute),
 		resetLimiter:    newRateLimiter(10, 15*time.Minute),
+		leadPageLimiter: newRateLimiter(100, time.Hour),
 		mailWake:        make(chan struct{}, 1),
 		fetcher:         newSafeFetcher(false),
 		reval:           newRevalidator(),

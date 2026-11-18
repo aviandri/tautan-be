@@ -20,6 +20,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/aviandri/tautan-be/internal/mail"
 )
 
 // Phase 3-C "Engage" cards: poll, ask_me, lead_magnet, giveaway.
@@ -356,14 +358,60 @@ func (s *Server) handleLead(w http.ResponseWriter, r *http.Request) {
 		s.internalError(w, err)
 		return
 	}
+	username := chi.URLParam(r, "username")
+	emailed, err := s.emailLead(r.Context(), pid, b.ID, username, in.Email, d.Title)
+	if err != nil {
+		s.internalError(w, err)
+		return
+	}
 	exp := now.Add(leadTokenTTL)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"download_url": "/api/v1/public/" + chi.URLParam(r, "username") + "/download/" + s.leadToken(b.ID, exp),
+		"download_url": "/api/v1/public/" + username + "/download/" + s.leadToken(b.ID, exp),
 		"expires_at":   exp.UTC().Truncate(time.Second),
+		"emailed":      emailed,
 	})
 }
 
-const leadTokenTTL = 15 * time.Minute
+const (
+	leadTokenTTL = 15 * time.Minute
+	// The emailed copy of the link lasts longer than the on-page one.
+	leadEmailTTL = 7 * 24 * time.Hour
+	// Lead emails per recipient per day, across all pages: the form takes
+	// any address, so this keeps it from being used to flood an inbox.
+	leadEmailsPerRecipient = 3
+)
+
+// emailLead queues the download link to the visitor when it can really be
+// sent: SMTP is configured and the page owner's email is confirmed (an
+// unconfirmed account could be a throwaway made to send mail). It reports
+// whether an email was queued; the on-page link works either way.
+func (s *Server) emailLead(ctx context.Context, profileID, blockID, username, to, title string) (bool, error) {
+	if s.cfg.MailDriver != "smtp" || !s.leadPageLimiter.Allow(blockID) {
+		return false, nil
+	}
+	to = strings.ToLower(strings.TrimSpace(to))
+	var display string
+	var verified bool
+	var recent int
+	err := s.db.QueryRow(ctx, `SELECT p.display_name, u.email_verified_at IS NOT NULL,
+		(SELECT count(*) FROM email_outbox o WHERE o.kind = 'lead_magnet' AND o.to_email = $2 AND o.created_at > $3)
+		FROM profiles p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, profileID, to, s.now().Add(-24*time.Hour)).Scan(&display, &verified, &recent)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!verified || recent >= leadEmailsPerRecipient)) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	pageURL := s.cfg.AppBaseURL + "/" + username
+	if display == "" {
+		display = "@" + username
+	}
+	link := s.cfg.PublicBaseURL + "/api/v1/public/" + username + "/download/" + s.leadToken(blockID, s.now().Add(leadEmailTTL))
+	if err := s.enqueueEmail(ctx, s.db, "lead_magnet", mail.LeadMagnetDelivery(to, display, pageURL, title, link)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // leadToken is <exp unix>.<block id>.<base64url HMAC>.
 func (s *Server) leadToken(blockID string, exp time.Time) string {

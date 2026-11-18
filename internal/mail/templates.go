@@ -140,3 +140,18 @@ func EmailChanged(to, maskedNew, link string) Message {
 		Footer:  "The undo link works for 7 days. After undoing, reset your password, since someone else may know it.",
 	}.message(to)
 }
+
+// LeadMagnetDelivery emails a visitor the download they asked for on a page.
+// Only owner text that's already public (the card title and page name) is
+// used, flattened to one line.
+func LeadMagnetDelivery(to, pageName, pageURL, title, link string) Message {
+	what := oneLine(title, 80)
+	return action{
+		Subject: oneLine("Your download: "+what, 120),
+		Heading: what,
+		Body:    "Here's the download you asked for on " + oneLine(pageName, 60) + " (" + pageURL + "). The link works for 7 days.",
+		Button:  "Download",
+		Link:    link,
+		Footer:  "You got this because this address was entered on that page. If that wasn't you, ignore this email; we won't send more.",
+	}.message(to)
+}
