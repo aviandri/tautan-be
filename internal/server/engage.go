@@ -222,7 +222,8 @@ func (s *Server) pollResults(ctx context.Context, blockID string, opts []PollOpt
 
 func (s *Server) handlePollVote(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		OptionID string `json:"option_id"`
+		OptionID  string `json:"option_id"`
+		VisitorID string `json:"visitor_id"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -246,11 +247,12 @@ func (s *Server) handlePollVote(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_option", "option_id is not an option of this poll")
 		return
 	}
-	if !s.engageLimiter.Allow(clientIP(r) + "|" + b.ID) {
+	vid := visitorID(in.VisitorID)
+	if !s.engageLimiter.Allow(clientIP(r)+"|"+vid+"|"+b.ID) || !s.engageIPLimiter.Allow(clientIP(r)+"|"+b.ID) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests, try again later")
 		return
 	}
-	vh, err := s.visitorHash(ctx, pid, clientIP(r), r.UserAgent())
+	vh, err := s.pollVoter(ctx, pid, r, vid)
 	if err != nil {
 		s.internalError(w, err)
 		return
@@ -280,7 +282,8 @@ func (s *Server) handlePollVote(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Question string `json:"question"`
+		Question  string `json:"question"`
+		VisitorID string `json:"visitor_id"`
 	}
 	if !decodeJSON(w, r, &in) {
 		return
@@ -294,7 +297,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_question", "question is required (max 500 characters)")
 		return
 	}
-	if !s.askLimiter.Allow(clientIP(r) + "|" + pid) {
+	if !s.askLimiter.Allow(clientIP(r)+"|"+visitorID(in.VisitorID)+"|"+pid) || !s.askIPLimiter.Allow(clientIP(r)+"|"+pid) {
 		writeError(w, http.StatusTooManyRequests, "rate_limited", "too many questions, try again later")
 		return
 	}
@@ -770,4 +773,70 @@ func (s *Server) attachEngage(ctx context.Context, blocks []Block, public bool) 
 		}
 	}
 	return nil
+}
+
+// visitorIDRE matches the first-party visitor id the public page keeps in
+// localStorage (random, base64url). Anything else is ignored.
+var visitorIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{16,64}$`)
+
+func visitorID(raw string) string {
+	if visitorIDRE.MatchString(raw) {
+		return raw
+	}
+	return ""
+}
+
+// pollVoter is the poll dedupe key for one day. With a visitor id it is that id
+// (hashed with the daily salt), so different people behind one carrier-NAT IP
+// with the same phone model can each vote. Clients that send none fall back to
+// IP + User-Agent, the old behaviour.
+func (s *Server) pollVoter(ctx context.Context, pid string, r *http.Request, vid string) (string, error) {
+	if vid != "" {
+		return s.visitorHash(ctx, pid, "vid:"+vid, "")
+	}
+	return s.visitorHash(ctx, pid, clientIP(r), r.UserAgent())
+}
+
+// handlePollStatus tells a returning visitor whether they voted today, so the
+// card can show its voted state on load: GET .../vote?visitor_id=...
+// → {voted: option_id|null, results?}. Results follow show_results: always, or
+// after a vote unless "never". Never cached (it is per visitor).
+func (s *Server) handlePollStatus(w http.ResponseWriter, r *http.Request) {
+	pid, b, ok := s.publicCard(w, r, "poll")
+	if !ok {
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	var d PollData
+	_ = json.Unmarshal(b.Data, &d)
+	ctx := r.Context()
+	vid := visitorID(r.URL.Query().Get("visitor_id"))
+	var voted *string
+	if vid != "" {
+		vh, err := s.pollVoter(ctx, pid, r, vid)
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		var opt string
+		err = s.db.QueryRow(ctx, `SELECT option_id FROM poll_votes WHERE block_id = $1 AND visitor_hash = $2
+			AND day = ($3::timestamptz AT TIME ZONE 'UTC')::date`, b.ID, vh, s.now()).Scan(&opt)
+		if err == nil {
+			voted = &opt
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			s.internalError(w, err)
+			return
+		}
+	}
+	out := map[string]any{"voted": voted}
+	show := d.ShowResults
+	if show == "always" || (voted != nil && show != "never") {
+		res, err := s.pollResults(ctx, b.ID, d.Options)
+		if err != nil {
+			s.internalError(w, err)
+			return
+		}
+		out["results"] = res
+	}
+	writeJSON(w, http.StatusOK, out)
 }

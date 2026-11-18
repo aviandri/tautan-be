@@ -235,3 +235,67 @@ func TestGiveaway(t *testing.T) {
 		t.Error("winnerDisplay")
 	}
 }
+
+// E2E 2026-11-18 #5: two people on one carrier-NAT IP with the same phone UA
+// can each vote when the page sends its first-party visitor id, and a returning
+// visitor gets their voted state from GET .../vote.
+func TestPollVisitorID(t *testing.T) {
+	_, h := newTestServer(t)
+	f := setupPage(t, h, "natpoll", true)
+	poll := createBlock(t, h, f.tok, map[string]any{"tab_id": f.tab.ID, "type": "poll", "data": map[string]any{
+		"question": "Which colour?", "options": []map[string]any{{"id": "red", "label": "Red"}, {"id": "blue", "label": "Blue"}}}})
+	path := "/api/v1/public/natpoll/blocks/" + poll.ID + "/vote"
+	const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)"
+	vote := func(opt, vid string) resp {
+		return do(t, h, "POST", path, map[string]any{"option_id": opt, "visitor_id": vid}, withHeader("User-Agent", ua))
+	}
+	vote("red", "visitorAAAAAAAAAAAAAAAA").expect(200)
+	vote("blue", "visitorBBBBBBBBBBBBBBBB").expect(200) // same IP + UA, different person
+	if c := vote("blue", "visitorAAAAAAAAAAAAAAAA"); c.Code != 409 || c.errCode() != "already_voted" {
+		t.Fatalf("repeat vote by the same visitor id: %d %s", c.Code, c.Body)
+	}
+	// No (or a malformed) id: the old IP+UA key, so a second id-less vote is refused.
+	vote("red", "").expect(200)
+	if c := vote("red", "bad id!"); c.Code != 409 {
+		t.Fatalf("malformed id should fall back to IP+UA: %d", c.Code)
+	}
+
+	var st struct {
+		Voted   *string      `json:"voted"`
+		Results *pollResults `json:"results"`
+	}
+	do(t, h, "GET", path+"?visitor_id=visitorAAAAAAAAAAAAAAAA", nil).expect(200).json(&st)
+	if st.Voted == nil || *st.Voted != "red" || st.Results == nil || st.Results.Total != 3 {
+		t.Fatalf("status for a voter = %+v", st)
+	}
+	st.Voted, st.Results = nil, nil
+	r := do(t, h, "GET", path+"?visitor_id=visitorCCCCCCCCCCCCCCCC", nil).expect(200)
+	r.json(&st)
+	if st.Voted != nil || st.Results != nil { // after_vote: no results before voting
+		t.Fatalf("status for a non-voter = %+v", st)
+	}
+	if cc := r.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Errorf("status Cache-Control = %q", cc)
+	}
+}
+
+func TestAskLimitPerVisitorID(t *testing.T) {
+	_, h := newTestServer(t)
+	f := setupPage(t, h, "natask", true)
+	ask := createBlock(t, h, f.tok, map[string]any{"tab_id": f.tab.ID, "type": "ask_me", "data": map[string]any{"prompt": "Ask me"}})
+	path := "/api/v1/public/natask/blocks/" + ask.ID + "/ask"
+	q := func(vid string) int {
+		return do(t, h, "POST", path, map[string]any{"question": "Hi?", "visitor_id": vid}).Code
+	}
+	for i := 0; i < 5; i++ {
+		if c := q("visitorAAAAAAAAAAAAAAAA"); c != 204 {
+			t.Fatalf("question %d: %d", i, c)
+		}
+	}
+	if c := q("visitorAAAAAAAAAAAAAAAA"); c != 429 {
+		t.Fatalf("6th question from one visitor = %d, want 429", c)
+	}
+	if c := q("visitorBBBBBBBBBBBBBBBB"); c != 204 { // a neighbour on the same IP
+		t.Fatalf("other visitor on the same IP = %d, want 204", c)
+	}
+}
