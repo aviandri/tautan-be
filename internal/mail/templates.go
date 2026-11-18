@@ -115,3 +115,28 @@ func SubmissionNotice(to, replyTo, pageName, blockTitle string, fields []Field, 
 	return Message{To: to, ReplyTo: replyTo, Subject: oneLine("New response: "+what+" ("+pageName+")", 120),
 		Text: strings.Join(lines, "\n"), HTML: h.String()}
 }
+
+// EmailChangeConfirm goes to the new address from POST /me/email.
+func EmailChangeConfirm(to, link string) Message {
+	return action{
+		Subject: "Confirm your new email for Tautan",
+		Heading: "Confirm your new email",
+		Body:    "Use this address to sign in to Tautan and get account emails. Your email only changes once you confirm. The link works once and expires in 24 hours. Confirming signs you out on all your devices.",
+		Button:  "Confirm new email",
+		Link:    link,
+		Footer:  "Didn't ask for this? Ignore this email and nothing changes.",
+	}.message(to)
+}
+
+// EmailChanged goes to the old address once a change is confirmed. The
+// link undoes the change for 7 days.
+func EmailChanged(to, maskedNew, link string) Message {
+	return action{
+		Subject: "Your Tautan email was changed",
+		Heading: "Your email was changed",
+		Body:    "The email on your Tautan account was changed to " + maskedNew + ", and every session was signed out. If you made this change, you don't need to do anything.",
+		Button:  "This wasn't me: undo it",
+		Link:    link,
+		Footer:  "The undo link works for 7 days. After undoing, reset your password, since someone else may know it.",
+	}.message(to)
+}

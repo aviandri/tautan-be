@@ -113,6 +113,8 @@ then `failed`. Bodies are cleared once a message is sent or fails, because they 
 - Owner notifications: contact messages and form responses email the page owner (on by
   default, confirmed addresses only, 20/hour per owner, Reply-To the visitor).
   `PATCH /me/notifications {submissions}` turns them off.
+- Email change: `POST /me/email` sends a confirm link to the new address; confirming switches
+  the email, signs out every session and sends the old address a notice with a 7-day undo link.
 - New features send mail with `s.enqueueEmail(ctx, tx, kind, mail.Message{...})`. Put
   templates in `internal/mail/templates.go`.
 
