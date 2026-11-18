@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -17,6 +18,8 @@ import (
 // look like the FE server), and the answer is a 303: to the provider's hosted
 // checkout or the order page on success, back to the FE page with ?error=
 // otherwise. JSON clients keep the JSON API on the same paths.
+
+var itemIDRE = regexp.MustCompile(`^[a-z0-9_-]{1,40}$`)
 
 func isFormPost(r *http.Request) bool {
 	return strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "application/x-www-form-urlencoded")
@@ -72,9 +75,10 @@ func seeOther(w http.ResponseWriter, r *http.Request, to string) {
 // POST /public/{username}/orders as a form: block_id, item_id?, email, name?,
 // provider?, and option.<variant name>=<choice> for each variant group.
 func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := r.ParseForm(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_form", "invalid form")
+		seeOther(w, r, s.cfg.AppBaseURL+"/"+url.PathEscape(username)+"/checkout?error=invalid_form")
 		return
 	}
 	f := r.PostForm
@@ -85,7 +89,6 @@ func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
 			in.Options[name] = v[0]
 		}
 	}
-	username := chi.URLParam(r, "username")
 	status, out := runAsJSON(s.handleCreateOrder, r, in)
 	if status == http.StatusCreated {
 		if u, _ := out["checkout_url"].(string); strings.HasPrefix(u, "https://") || strings.HasPrefix(u, "http://") {
@@ -93,8 +96,13 @@ func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	q := url.Values{"block": {in.BlockID}, "error": {errCode(out)}}
-	if in.ItemID != "" {
+	// block and item come from the buyer's form: echo them back only when they
+	// look like ours (a uuid, a shop item id), so the Location header stays small.
+	q := url.Values{"error": {errCode(out)}}
+	if uuidRE.MatchString(in.BlockID) {
+		q.Set("block", in.BlockID)
+	}
+	if itemIDRE.MatchString(in.ItemID) {
 		q.Set("item", in.ItemID)
 	}
 	seeOther(w, r, s.cfg.AppBaseURL+"/"+url.PathEscape(username)+"/checkout?"+q.Encode())
@@ -102,12 +110,12 @@ func (s *Server) handleCreateOrderForm(w http.ResponseWriter, r *http.Request) {
 
 // POST /public/{username}/orders/lookup as a form: email, code.
 func (s *Server) handleOrderLookupForm(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
 	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
 	if err := r.ParseForm(); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_form", "invalid form")
+		seeOther(w, r, s.cfg.AppBaseURL+"/"+url.PathEscape(username)+"/orders?error=invalid_form")
 		return
 	}
-	username := chi.URLParam(r, "username")
 	status, out := runAsJSON(s.handleOrderLookup, r, map[string]string{"email": r.PostForm.Get("email"), "code": r.PostForm.Get("code")})
 	if id, _ := out["order_id"].(string); status == http.StatusOK && id != "" {
 		seeOther(w, r, s.orderPageURL(username, id))

@@ -40,6 +40,16 @@ func TestOrderFormPosts(t *testing.T) {
 		t.Fatalf("missing option = %s", r.Header().Get("Location"))
 	}
 
+	// Junk block/item aren't echoed; an oversized body still comes back as a 303.
+	r = formPost(t, fx, "/api/v1/public/seller/orders", url.Values{"block_id": {"<x>"}, "item_id": {strings.Repeat("A", 5000)}, "email": {"f@example.com"}}).expect(303)
+	if loc := r.Header().Get("Location"); len(loc) > 200 || strings.Contains(loc, "block=") || strings.Contains(loc, "item=") {
+		t.Fatalf("echoed junk: %q", loc)
+	}
+	r = do(t, fx.h, "POST", "/api/v1/public/seller/orders", "email="+strings.Repeat("a", 70<<10), withHeader("Content-Type", "application/x-www-form-urlencoded")).expect(303)
+	if !strings.Contains(r.Header().Get("Location"), "error=invalid_form") {
+		t.Fatalf("oversized form = %q", r.Header().Get("Location"))
+	}
+
 	// Lookup: 303 to the order page, or back with an error.
 	var code string
 	_ = testPool.QueryRow(t.Context(), `SELECT code FROM orders WHERE buyer_email = 'f@example.com'`).Scan(&code)
