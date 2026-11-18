@@ -1,0 +1,55 @@
+# Caddy in front of the Tautan FE and API on one VPS, behind Cloudflare (proxied, SSL "Full (strict)").
+# TLS uses a Cloudflare Origin CA certificate (deploy/certs/origin.pem + origin-key.pem, covering
+# the apex and *.domain). Let's Encrypt HTTP-01 fails behind Cloudflare once "Always Use HTTPS" is on.
+# SITE_DOMAIN and API_DOMAIN come from deploy/.env via docker-compose.
+{
+	auto_https disable_certs
+	servers {
+		# Cloudflare edge ranges (https://www.cloudflare.com/ips/, checked 2026-11). From these peers
+		# Caddy believes CF-Connecting-IP as the client and appends the peer to X-Forwarded-For, so the
+		# API (TRUSTED_PROXIES=private,cloudflare) sees "visitor, cloudflare-ip" and picks the visitor.
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		client_ip_headers CF-Connecting-IP
+	}
+}
+
+(common) {
+	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin-key.pem
+	encode zstd gzip
+	# Requests that reach the VPS directly (not via Cloudflare) can't spoof Cloudflare's headers.
+	@not_cloudflare not remote_ip 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+	request_header @not_cloudflare -CF-IPCountry
+	request_header @not_cloudflare -CF-Connecting-IP
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$SITE_DOMAIN} {
+	import common
+	reverse_proxy fe:3000
+}
+
+www.{$SITE_DOMAIN} {
+	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin-key.pem
+	redir https://{$SITE_DOMAIN}{uri} permanent
+}
+
+{$API_DOMAIN} {
+	import common
+	# 25 MB file uploads plus multipart overhead
+	request_body {
+		max_size 30MB
+	}
+	reverse_proxy api:8080 {
+		health_uri /readyz
+		health_interval 10s
+	}
+}

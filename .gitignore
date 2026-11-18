@@ -3,3 +3,8 @@ bin/
 uploads/
 *.test
 .env
+
+# deploy secrets and data
+deploy/.env
+deploy/certs/
+deploy/backups/

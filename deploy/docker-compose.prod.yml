@@ -1,0 +1,99 @@
+# Single-VPS production stack: Caddy (TLS) → Next.js FE + Go API → Postgres 17.
+# Images come from GHCR (built by each repo's image workflow). Nothing here builds code.
+#
+#   cd deploy && cp .env.example .env && $EDITOR .env && chmod 600 .env
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Upgrade: docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d
+# Pin TAUTAN_TAG to a sha-xxxxxxx tag so a rollback is a one-line change.
+name: tautan
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./certs:/etc/caddy/certs:ro # Cloudflare Origin CA cert + key
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [fe, api]
+
+  fe:
+    image: ghcr.io/aviandri/tautan-fe:${TAUTAN_FE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET}
+      API_INTERNAL_URL: http://api:8080
+    # One replica only: the ISR cache lives inside this container (see the tautan-fe README).
+    depends_on:
+      api: {condition: service_healthy}
+
+  api:
+    image: ghcr.io/aviandri/tautan-be:${TAUTAN_BE_TAG:-latest}
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      APP_ENV: production
+      DATABASE_URL: postgres://tautan:${POSTGRES_PASSWORD}@db:5432/tautan?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET}
+      PUBLIC_BASE_URL: https://${API_DOMAIN}
+      APP_BASE_URL: https://${SITE_DOMAIN}
+      CORS_ORIGINS: https://${SITE_DOMAIN},https://www.${SITE_DOMAIN}
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: lax
+      TRUSTED_PROXIES: private,cloudflare
+      COUNTRY_HEADER: CF-IPCountry
+      REVALIDATE_SECRET: ${REVALIDATE_SECRET}
+      REVALIDATE_URL: http://fe:3000/api/revalidate # private hop; skips Cloudflare and TLS
+      SHUTDOWN_DELAY: 2s
+      STORAGE: ${STORAGE:-local}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+      INSTAGRAM_OEMBED_TOKEN: ${INSTAGRAM_OEMBED_TOKEN:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URL: ${GOOGLE_REDIRECT_URL:-}
+    volumes:
+      - uploads:/data/uploads # used when STORAGE=local
+    depends_on:
+      db: {condition: service_healthy}
+
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tautan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: tautan
+    volumes: [pgdata:/var/lib/postgresql/data]
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tautan -d tautan"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      KEEP: "14"
+    volumes:
+      - ./backups:/backups
+      - ./backup.sh:/backup.sh:ro
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    depends_on:
+      db: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  uploads:
+  caddy_data:
+  caddy_config:
