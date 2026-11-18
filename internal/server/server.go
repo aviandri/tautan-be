@@ -53,6 +53,8 @@ type Server struct {
 	mailer         mail.Sender
 	mailWake       chan struct{}
 	resetLimiter   *rateLimiter
+	// refresh, username-available and the Google endpoints, per IP (audit L9).
+	authMiscLimiter *rateLimiter
 	// Sign-in attempts per IP, failed sign-ins per account, sign-ups per IP.
 	loginIPLimiter, loginFailLimiter, signupLimiter *rateLimiter
 	// Lead-magnet emails per card per hour (on top of per-IP and per-recipient caps).
@@ -86,6 +88,7 @@ func New(cfg config.Config, pool *pgxpool.Pool) *Server {
 		askIPLimiter:    newRateLimiter(60, 10*time.Minute),
 		unlockLimiter:   newRateLimiter(10, 10*time.Minute),
 		resetLimiter:    newRateLimiter(10, 15*time.Minute),
+		authMiscLimiter: newRateLimiter(120, time.Minute),
 		// Generous per IP: carrier-grade NAT puts many phones behind one address.
 		loginIPLimiter:    newRateLimiter(60, 15*time.Minute),
 		loginFailLimiter:  newRateLimiter(10, 15*time.Minute),
@@ -175,12 +178,12 @@ func (s *Server) Routes() http.Handler {
 
 		r.Post("/auth/signup", s.handleSignup)
 		r.Post("/auth/login", s.handleLogin)
-		r.Post("/auth/refresh", s.handleRefresh)
+		r.Post("/auth/refresh", s.limitIP(s.authMiscLimiter, s.handleRefresh))
 		r.Post("/auth/logout", s.handleLogout)
-		r.Get("/auth/username-available", s.handleUsernameAvailable)
+		r.Get("/auth/username-available", s.limitIP(s.authMiscLimiter, s.handleUsernameAvailable))
 		r.Get("/auth/providers", s.handleAuthProviders)
-		r.Get("/auth/google/start", s.handleGoogleStart)
-		r.Post("/auth/google/callback", s.handleGoogleCallback)
+		r.Get("/auth/google/start", s.limitIP(s.authMiscLimiter, s.handleGoogleStart))
+		r.Post("/auth/google/callback", s.limitIP(s.authMiscLimiter, s.handleGoogleCallback))
 		r.Post("/auth/password/forgot", s.handleForgotPassword)
 		r.Post("/auth/password/reset", s.handleResetPassword)
 		r.Post("/auth/verify-email", s.handleVerifyEmail)

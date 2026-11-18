@@ -100,8 +100,14 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			s.internalError(w, err)
 			return
 		}
-		if _, _, _, err := imageDims(data); err != nil {
+		iw, ih, _, err := imageDims(data)
+		if err != nil {
 			writeError(w, http.StatusUnsupportedMediaType, "unsupported_type", "the image could not be read")
+			return
+		}
+		// A small file can declare huge dimensions and hang visitors' browsers (audit L6).
+		if iw > maxImageSide || ih > maxImageSide || iw*ih > maxVariantPixels {
+			writeError(w, http.StatusBadRequest, "image_too_large", "images can be at most 16384 px on a side and 40 megapixels")
 			return
 		}
 		src = bytes.NewReader(data)
@@ -153,6 +159,9 @@ func (s *Server) serveUploads() http.Handler {
 			return
 		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// Nothing served from here may run script or load anything, even if a
+		// file were ever rendered as a document (audit L5).
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
 		if r.URL.Query().Has("w") && s.serveVariant(w, r, name) {
 			return
 		}

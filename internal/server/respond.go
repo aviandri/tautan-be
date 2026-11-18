@@ -41,3 +41,14 @@ func (s *Server) internalError(w http.ResponseWriter, err error) {
 	log.Printf("internal error: %v", err)
 	writeError(w, http.StatusInternalServerError, "internal", "internal server error")
 }
+
+// limitIP answers 429 once the caller's IP is over l.
+func (s *Server) limitIP(l *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !l.Allow(clientIP(r)) {
+			writeError(w, http.StatusTooManyRequests, "rate_limited", "too many requests; try again in a minute")
+			return
+		}
+		next(w, r)
+	}
+}

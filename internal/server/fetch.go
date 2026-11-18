@@ -28,7 +28,7 @@ var blockedPrefixes = func() []netip.Prefix {
 	var out []netip.Prefix
 	for _, p := range []string{
 		"0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
-		"203.0.113.0/24", "240.0.0.0/4", "255.255.255.255/32",
+		"203.0.113.0/24", "240.0.0.0/4", "255.255.255.255/32", "192.88.99.0/24",
 		"64:ff9b::/96", "64:ff9b:1::/48", "2001:db8::/32", "2002::/16", "100::/64", "2001::/32",
 	} {
 		out = append(out, netip.MustParsePrefix(p))
@@ -36,9 +36,17 @@ var blockedPrefixes = func() []netip.Prefix {
 	return out
 }()
 
+var globalV6 = netip.MustParsePrefix("2000::/3")
+
 // publicIP reports whether ip is a globally routable unicast address.
 func publicIP(ip netip.Addr) bool {
 	ip = ip.Unmap()
+	// IPv6: only the global unicast block 2000::/3 is ever fetched. That rules
+	// out IPv4-compatible ::a.b.c.d, SIIT ::ffff:0:a.b.c.d, site-local fec0::/10
+	// and anything else a host might route somewhere internal (audit L4).
+	if ip.Is6() && !globalV6.Contains(ip) {
+		return false
+	}
 	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
 		ip.IsMulticast() || ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
 		return false

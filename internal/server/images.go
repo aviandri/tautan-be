@@ -38,6 +38,7 @@ var variantWidths = []int{160, 320, 640, 1080}
 
 const (
 	maxVariantPixels = 40_000_000 // skip decoding anything larger (decompression bombs)
+	maxImageSide     = 16384      // uploads above this on either side are refused
 	webpQuality      = 75
 	avifQuality      = 50
 	avifSpeed        = 8
